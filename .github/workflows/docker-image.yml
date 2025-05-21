@@ -1,41 +1,52 @@
 name: Docker Image CI
 
 on:
-  push:
-    branches: [ "main" ]
-    tags:
-      - 'v*.*.*'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Нужно для работы с git-тегами
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v2
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GHCR_PAT }}
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
 
-    - name: Extract version from git tag
-      id: vars
-      run: |
-        if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-          VERSION="${GITHUB_REF#refs/tags/v}"
-        else
-          VERSION="latest"
-        fi
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Get latest version tag
+        id: get_version
+        run: |
+          latest_tag=$(git tag --list 'v*' | sort -V | tail -n1)
+          if [[ -z "$latest_tag" ]]; then
+            latest_tag="v1.0.0"
+          fi
+          echo "latest_tag=$latest_tag" >> $GITHUB_OUTPUT
 
-    - name: Build and push Docker image
-      run: |
-        IMAGE=ghcr.io/${{ github.repository_owner }}/vexel-music-bot
-        docker build -t $IMAGE:${{ steps.vars.outputs.version }} -t $IMAGE:latest .
-        docker push $IMAGE:${{ steps.vars.outputs.version }}
-        docker push $IMAGE:latest
+      - name: Bump patch version and create new tag
+        id: bump_version
+        run: |
+          old_version="${{ steps.get_version.outputs.latest_tag }}"
+          IFS='.' read -r major minor patch <<<"${old_version#v}"
+          patch=$((patch+1))
+          new_version="v$major.$minor.$patch"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag "$new_version"
+          git push origin "$new_version"
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/vexel-music-bot
+          docker build -t $IMAGE:${{ steps.bump_version.outputs.new_version }} -t $IMAGE:latest .
+          docker push $IMAGE:${{ steps.bump_version.outputs.new_version }}
+          docker push $IMAGE:latest
