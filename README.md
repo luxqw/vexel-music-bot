@@ -16,8 +16,8 @@
 
 ## 🌐 Language / Язык
 
-- [English](https://github.com/luxqw/vexel-music-bot?tab=readme-ov-file#-features)
-- [Русский](https://github.com/luxqw/vexel-music-bot?tab=readme-ov-file#-%D0%BE%D1%81%D0%BE%D0%B1%D0%B5%D0%BD%D0%BD%D0%BE%D1%81%D1%82%D0%B8)
+- [English](https://github.com/luxqw/vexel-music-bot#-features)
+- [Русский](https://github.com/luxqw/vexel-music-bot#-%D0%BE%D1%81%D0%BE%D0%B1%D0%B5%D0%BD%D0%BD%D0%BE%D1%81%D1%82%D0%B8)
 
 ---
 
@@ -33,16 +33,16 @@
 
 ---
 
-## 📦 Quickstart (Docker)
+## 📦 Quick Start (Docker)
 
-#### 1. Clone the repository
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/luxqw/vexel-music-bot.git
 cd vexel-music-bot
 ```
 
-#### 2. Create .env
+### 2. Create .env
 
 ```env
 DISCORD_TOKEN=your_bot_token
@@ -51,13 +51,35 @@ YDL_OPTS='{"format": "bestaudio"}'
 
 You can use `.env.example` as a template.
 
-#### 3. Start with Docker Compose
+### 3. Start with Docker Compose
 
 ```bash
 docker compose up -d
 ```
 
-### 🧠 Slash Commands
+---
+
+## 🔄 Updating the Bot
+
+If you need to update the bot to the latest version, you have two options:
+
+### Pull the latest image from GitHub:
+
+```bash
+docker pull ghcr.io/luxqw/vexel-music-bot:latest
+docker compose up -d
+```
+
+### Build the image locally:
+
+```bash
+docker build -t vexel-music-bot .
+docker compose up -d
+```
+
+---
+
+## 🧠 Slash Commands
 
 ```plaintext
 /play [url]   Play audio from YouTube URL
@@ -69,21 +91,9 @@ docker compose up -d
 /leave        Disconnect the bot from voice channel
 ```
 
-### 🐙 Pull the image directly from GitHub:
-
-```bash
-docker pull ghcr.io/luxqw/vexel-music-bot:latest
-```
-
-Or build your own:
-
-```bash
-docker build -t vexel-music-bot .
-```
-
 ---
 
-### 📁 Project Structure
+## 📁 Project Structure
 
 ```plaintext
 vexel-music-bot/
@@ -118,16 +128,18 @@ vexel-music-bot/
 - 🎶 Стриминг аудио высокого качества
 - 🛠️ Простая установка с помощью Docker
 
-### 📦 Быстрый старт (Docker)
+---
 
-#### 1. Клонировать репозиторий
+## 📦 Быстрый старт (Docker)
+
+### 1. Клонировать репозиторий
 
 ```bash
 git clone https://github.com/luxqw/vexel-music-bot.git
 cd vexel-music-bot
 ```
 
-#### 2. Создать .env
+### 2. Создать .env
 
 ```env
 DISCORD_TOKEN=your_bot_token
@@ -136,13 +148,35 @@ YDL_OPTS='{"format": "bestaudio"}'
 
 Вы можете использовать `.env.example` как шаблон.
 
-#### 3. Запустить с помощью Docker Compose
+### 3. Запустить с помощью Docker Compose
 
 ```bash
 docker compose up -d
 ```
 
-### 🧠 Слэш-команды
+---
+
+## 🔄 Обновление бота
+
+Если вы хотите обновить бота до последней версии, у вас есть два варианта:
+
+### Скачать последнюю версию образа с GitHub:
+
+```bash
+docker pull ghcr.io/luxqw/vexel-music-bot:latest
+docker compose up -d
+```
+
+### Собрать образ локально:
+
+```bash
+docker build -t vexel-music-bot .
+docker compose up -d
+```
+
+---
+
+## 🧠 Слэш-команды
 
 ```plaintext
 /play [url]   Воспроизведение аудио с YouTube
@@ -154,21 +188,9 @@ docker compose up -d
 /leave        Отключить бота от голосового канала
 ```
 
-### 🐙 Скачать образ напрямую из GitHub:
-
-```bash
-docker pull ghcr.io/luxqw/vexel-music-bot:latest
-```
-
-Или собрать свой образ:
-
-```bash
-docker build -t vexel-music-bot .
-```
-
 ---
 
-### 📁 Структура проекта
+## 📁 Структура проекта
 
 ```plaintext
 vexel-music-bot/
@@ -184,3 +206,9 @@ vexel-music-bot/
 ```
 
 ---
+
+### 🔗 Присоединяйтесь к нашему Discord серверу
+
+| **Сообщество** | **Ссылка**                                                               |
+|----------------|--------------------------------------------------------------------------|
+| Discord        | [Присоединиться к серверу](https://discord.gg/example)                  |
