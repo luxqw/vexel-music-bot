@@ -27,14 +27,14 @@
 git clone https://github.com/luxqw/vexel-music-bot.git
 cd vexel-music-bot
 ```
-2. Create .env
+### 2. Create .env
 ```
 DISCORD_TOKEN=your_bot_token
 YDL_OPTS='{"format": "bestaudio"}'
 ```
 You can use .env.example as a template.
 
-3. Start with Docker Compose
+### 3. Start with Docker Compose
 ```
 docker compose up -d
 ```
