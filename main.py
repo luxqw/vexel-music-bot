@@ -75,7 +75,12 @@ async def play(interaction: discord.Interaction, query: str):
             return
 
     await interaction.response.send_message(f"🔍 Ищу: {query}")
-    info = ytdl.extract_info(query, download=False)
+    if not (query.startswith("http://") or query.startswith("https://")):
+        search_query = f"ytsearch1:{query}"
+    else:
+        search_query = query
+
+    info = ytdl.extract_info(search_query, download=False)
 
     queue = get_queue(interaction.guild.id)
 
