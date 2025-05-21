@@ -1,7 +1,7 @@
 import os
 import logging
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 import yt_dlp
 
@@ -15,7 +15,6 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 tree = bot.tree
 queues = {}
-volumes = {}
 
 logging.basicConfig(filename="bot.log", level=logging.INFO)
 
@@ -34,15 +33,11 @@ def get_queue(guild_id):
     return queues.setdefault(guild_id, [])
 
 
-def get_volume(guild_id):
-    return volumes.get(guild_id, 0.5)
-
-
-def create_source(url, volume):
+def create_source(url):
     return discord.FFmpegPCMAudio(
         url,
         before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-        options=f'-vn -filter:a "volume={volume}"'
+        options='-vn'
     )
 
 
@@ -83,7 +78,6 @@ async def play(interaction: discord.Interaction, query: str):
     info = ytdl.extract_info(query, download=False)
 
     queue = get_queue(interaction.guild.id)
-    vol = get_volume(interaction.guild.id)
 
     if "entries" in info:
         for entry in info["entries"]:
@@ -111,32 +105,80 @@ async def play_next(vc, guild_id):
         return
 
     next_track = queue.pop(0)
-    source = create_source(next_track["url"], get_volume(guild_id))
+    source = create_source(next_track["url"])
 
     vc.play(source, after=lambda e: bot.loop.create_task(play_next(vc, guild_id)))
 
 
-@tree.command(name="volume", description="Установить громкость (0–100%)")
-@app_commands.describe(level="Громкость от 0 до 100")
-async def volume(interaction: discord.Interaction, level: int):
-    log_command(interaction.user.name, "/volume")
-    if 0 <= level <= 100:
-        volumes[interaction.guild.id] = level / 100
-        await interaction.response.send_message(f"🔊 Громкость установлена на {level}%")
+@tree.command(name="pause", description="Приостановить воспроизведение")
+async def pause(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/pause")
+    vc = interaction.guild.voice_client
+    if vc and vc.is_playing():
+        vc.pause()
+        await interaction.response.send_message("⏸️ Воспроизведение приостановлено.")
     else:
-        await interaction.response.send_message("⚠️ Укажите громкость от 0 до 100.")
+        await interaction.response.send_message("❌ Сейчас ничего не играет.")
+
+
+@tree.command(name="resume", description="Продолжить воспроизведение")
+async def resume(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/resume")
+    vc = interaction.guild.voice_client
+    if vc and vc.is_paused():
+        vc.resume()
+        await interaction.response.send_message("▶️ Воспроизведение продолжено.")
+    else:
+        await interaction.response.send_message("❌ Музыка не приостановлена.")
+
+
+@tree.command(name="stop", description="Остановить воспроизведение и очистить очередь")
+async def stop(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/stop")
+    vc = interaction.guild.voice_client
+    if vc:
+        vc.stop()
+        await vc.disconnect()
+        queues[interaction.guild.id] = []
+        await interaction.response.send_message("⏹️ Остановлено и отключено.")
+    else:
+        await interaction.response.send_message("❌ Бот не подключен к голосовому каналу.")
+
+
+@tree.command(name="skip", description="Пропустить текущую песню")
+async def skip(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/skip")
+    vc = interaction.guild.voice_client
+    if vc and vc.is_playing():
+        vc.stop()
+        await interaction.response.send_message("⏭️ Трек пропущен.")
+    else:
+        await interaction.response.send_message("❌ Сейчас ничего не играет.")
+
+
+@tree.command(name="queue", description="Показать текущую очередь")
+async def queue_cmd(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/queue")
+    queue = get_queue(interaction.guild.id)
+    if queue:
+        text = "\n".join([f"{i+1}. {song['title']} (от {song['requester']})" for i, song in enumerate(queue)])
+        await interaction.response.send_message(f"📃 Очередь:\n{text}")
+    else:
+        await interaction.response.send_message("📭 Очередь пуста.")
 
 
 @tree.command(name="help", description="Показать справку по командам")
 async def help_cmd(interaction: discord.Interaction):
     log_command(interaction.user.name, "/help")
-    await interaction.response.send_message("""📖 **Команды Vexel Music Bot**
+    await interaction.response.send_message("""📖 **Команды бота**
 
 - `/play <url или запрос>` — Воспроизведение трека
-- `/volume <0-100>` — Установить громкость
-- Поддержка плейлистов, авто-выход и логирование включены.
-
-👉 Команды на английском. Интерфейс — на русском.
+- `/pause` — Приостановить текущую песню
+- `/resume` — Продолжить воспроизведение
+- `/stop` — Остановить воспроизведение и отключиться
+- `/skip` — Пропустить текущую песню
+- `/queue` — Показать текущую очередь
 """)
+
 
 bot.run(TOKEN)
