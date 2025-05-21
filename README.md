@@ -17,7 +17,7 @@
 ## 🌐 Language / Язык
 
 - [English](#features)
-- [Русский](#особенности)
+- [Русский](https://github.com/luxqw/vexel-music-bot?tab=readme-ov-file#-%D0%BE%D1%81%D0%BE%D0%B1%D0%B5%D0%BD%D0%BD%D0%BE%D1%81%D1%82%D0%B8)
 
 ---
 
