@@ -2,7 +2,8 @@ version: '3.8'
 
 services:
   vexel-music-bot:
-    build: .
+    image: ghcr.io/luxqw/vexel-music-bot:latest
     env_file:
       - .env
     restart: always
+
