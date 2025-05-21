@@ -5,15 +5,15 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/stars/luxqw/vexel-music-bot?style=for-the-badge" />
-  <img src="https://img.shields.io/github/license/luxqw/vexel-music-bot?style=for-the-badge" />
-  <img src="https://img.shields.io/github/actions/workflow/status/luxqw/vexel-music-bot/docker-publish.yml?label=build&style=for-the-badge" />
+  <img src="https://img.shields.io/github/forks/luxqw/vexel-music-bot?style=for-the-badge" />
+  <img src="https://img.shields.io/github/issues/luxqw/vexel-music-bot?style=for-the-badge" />
 </p>
 
 ---
 
 ## ✨ Features
 
-- ✅ Slash commands (`/play`, `/pause`, `/volume`, etc.)
+- ✅ Slash commands (`/play`, `/pause`, etc.)
 - 📃 YouTube playlist support
 - 💤 Auto-leaves voice channel when kicked or moved
 - 📜 Admin command logging
