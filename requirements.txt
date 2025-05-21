@@ -1,2 +1,5 @@
-discord.py==2.3.2
-yt-dlp
+discord.py[voice]
+PyNaCl
+yt_dlp
+pytube
+python-dotenv
