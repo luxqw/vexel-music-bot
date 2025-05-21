@@ -53,12 +53,20 @@ async def on_ready():
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if not member.bot:
+    if member.bot:
         return
+
     vc = discord.utils.get(bot.voice_clients, guild=member.guild)
-    if vc and len(vc.channel.members) == 1:
-        await vc.disconnect()
-        print(f"⛔ Авто-выход из {member.guild.name}")
+
+    if vc and vc.channel and len(vc.channel.members) == 1: 
+        if vc.is_playing():
+            vc.pause() 
+            print("⏸️ Музыка приостановлена, так как бот остался один в канале.")
+
+        await asyncio.sleep(60)  
+        if len(vc.channel.members) == 1:  
+            await vc.disconnect()
+            print(f"⏹️ Отключение из канала {vc.channel.name} на сервере {member.guild.name}")
 
 
 @tree.command(name="play", description="Воспроизвести музыку или плейлист с YouTube")
