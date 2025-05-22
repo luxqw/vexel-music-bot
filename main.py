@@ -1,6 +1,7 @@
 import os
 import logging
 import discord
+import asyncio
 from discord.ext import commands
 from discord import app_commands
 import yt_dlp
