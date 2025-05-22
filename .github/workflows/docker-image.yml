@@ -44,17 +44,55 @@ jobs:
           git push origin "$new_version"
           echo "new_version=$new_version" >> $GITHUB_OUTPUT
 
+      - name: Start Timer
+        id: start_timer
+        run: echo "start_time=$(date +%s)" >> $GITHUB_ENV
+
       - name: Build and push Docker image
+        id: build_push
         run: |
           IMAGE=ghcr.io/${{ github.repository_owner }}/vexel-music-bot
           docker build -t $IMAGE:${{ steps.bump_version.outputs.new_version }} -t $IMAGE:latest .
           docker push $IMAGE:${{ steps.bump_version.outputs.new_version }}
           docker push $IMAGE:latest
+          size=$(docker image inspect $IMAGE:${{ steps.bump_version.outputs.new_version }} --format='{{.Size}}')
+          echo "docker_size=$((size / 1024 / 1024)) MB" >> $GITHUB_ENV
+        continue-on-error: true
+
+      - name: Calculate Duration
+        id: calculate_duration
+        run: |
+          end_time=$(date +%s)
+          duration=$((end_time - ${{ env.start_time }}))
+          echo "duration=${duration}s" >> $GITHUB_ENV
 
       - name: Notify Discord
+        if: always()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          BUILD_STATUS: ${{ job.status }}
+          DURATION: ${{ env.duration }}
+          DOCKER_SIZE: ${{ env.docker_size }}
         run: |
+          if [[ "${BUILD_STATUS}" == "success" ]]; then
+            COLOR=65280
+            STATUS_MSG="✅ Build Completed Successfully!"
+          else
+            COLOR=16711680
+            STATUS_MSG="❌ Build Failed!"
+          fi
           curl -H "Content-Type: application/json" \
-               -d '{"content": "**✅ Build completed successfully!**\nBranch: main\nTag: ${{ steps.bump_version.outputs.new_version }}"}' \
+               -d '{
+                    "embeds": [{
+                        "title": "'"${STATUS_MSG}"'",
+                        "description": "**Branch:** main\n**Tag:** '${{ steps.bump_version.outputs.new_version }}'\n**Commit:** [`'${{ github.sha }}'`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})\n**Duration:** '${{ env.DURATION }}'\n**Docker Image Size:** '${{ env.DOCKER_SIZE }}'",
+                        "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                        "color": '"${COLOR}"',
+                        "footer": {
+                            "text": "GitHub Actions CI/CD",
+                            "icon_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+                        },
+                        "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+                    }]
+                }' \
                $DISCORD_WEBHOOK
