@@ -83,12 +83,12 @@ async def play(interaction: discord.Interaction, query: str):
             await interaction.response.send_message("⚠️ Сначала зайдите в голосовой канал.")
             return
 
-    await interaction.response.send_message(f"🔍 Ищу: {query}")
-    if not (query.startswith("http://") or query.startswith("https://")):
-        search_query = f"ytsearch1:{query}"
+    if query.startswith("http://") or query.startswith("https://"):
+        await interaction.response.send_message(f"🔗 Добавляю по ссылке: {query}")
     else:
-        search_query = query
+        await interaction.response.send_message(f"🔍 Ищу: {query}")
 
+    search_query = f"ytsearch1:{query}" if not (query.startswith("http://") or query.startswith("https://")) else query
     info = ytdl.extract_info(search_query, download=False)
 
     queue = get_queue(interaction.guild.id)
@@ -97,17 +97,18 @@ async def play(interaction: discord.Interaction, query: str):
         for entry in info["entries"]:
             queue.append({
                 "title": entry["title"],
-                "url": entry["url"],
+                "url": entry["webpage_url"],  # Исправлено для точности ссылки
                 "requester": interaction.user.name,
             })
         await interaction.followup.send(f"📃 Добавлен плейлист: {len(info['entries'])} треков.")
     else:
-        queue.append({
+        track = {
             "title": info["title"],
-            "url": info["url"],
+            "url": info["webpage_url"],  # Исправлено для точности ссылки
             "requester": interaction.user.name,
-        })
-        await interaction.followup.send(f"🎶 Добавлен: {info['title']}")
+        }
+        queue.append(track)
+        await interaction.followup.send(f"🎶 Добавлен трек: {track['title']}")
 
     if not vc.is_playing():
         await play_next(vc, interaction.guild.id)
