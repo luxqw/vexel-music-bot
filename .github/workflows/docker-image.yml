@@ -66,7 +66,7 @@ jobs:
           duration=$((end_time - ${{ env.start_time }}))
           echo "duration=${duration}s" >> $GITHUB_ENV
 
-      - name: Notify Discord
+            - name: Notify Discord
         if: always()
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
