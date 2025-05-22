@@ -8,8 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libffi-dev \
     libssl3 \
-    && apt-get autoremove -y && apt-get clean && rm -rf /var/lib/apt/lists/*
-    
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
