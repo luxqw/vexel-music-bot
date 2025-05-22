@@ -89,7 +89,12 @@ async def play(interaction: discord.Interaction, query: str):
         await interaction.response.send_message(f"🔍 Ищу: {query}")
 
     search_query = f"ytsearch1:{query}" if not (query.startswith("http://") or query.startswith("https://")) else query
-    info = ytdl.extract_info(search_query, download=False)
+
+    try:
+        info = ytdl.extract_info(search_query, download=False)
+    except Exception as e:
+        await interaction.followup.send_message(f"❌ Ошибка при обработке запроса: {str(e)}")
+        return
 
     queue = get_queue(interaction.guild.id)
 
@@ -97,14 +102,14 @@ async def play(interaction: discord.Interaction, query: str):
         for entry in info["entries"]:
             queue.append({
                 "title": entry["title"],
-                "url": entry["webpage_url"],  # Исправлено для точности ссылки
+                "url": entry["url"],  # Вернули использование url
                 "requester": interaction.user.name,
             })
         await interaction.followup.send(f"📃 Добавлен плейлист: {len(info['entries'])} треков.")
     else:
         track = {
             "title": info["title"],
-            "url": info["webpage_url"],  # Исправлено для точности ссылки
+            "url": info["url"],  # Вернули использование url
             "requester": interaction.user.name,
         }
         queue.append(track)
