@@ -45,6 +45,10 @@ def create_source(url):
 @bot.event
 async def on_ready():
     print(f"✅ Вошли как {bot.user}")
+    await bot.change_presence(activity=discord.Activity(
+        type=discord.ActivityType.listening,
+        name="/help"
+    ))
     try:
         synced = await tree.sync()
         print(f"📡 Синхронизированы {len(synced)} команд(ы)")
