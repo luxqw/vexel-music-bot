@@ -7,6 +7,7 @@
   <img src="https://img.shields.io/github/stars/luxqw/vexel-music-bot?style=for-the-badge" />
   <img src="https://img.shields.io/github/forks/luxqw/vexel-music-bot?style=for-the-badge" />
   <img src="https://img.shields.io/github/issues/luxqw/vexel-music-bot?style=for-the-badge" />
+  <img src="https://img.shields.io/github/license/luxqw/vexel-music-bot?style=for-the-badge" />
   <a href="https://discord.gg/jZtxj9Stak">
     <img src="https://img.shields.io/badge/Discord-Join%20Server-blue?style=for-the-badge&logo=discord" />
   </a>
