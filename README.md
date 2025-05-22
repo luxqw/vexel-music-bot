@@ -88,7 +88,6 @@ docker compose up -d
 /stop         Stop playback and clear queue
 /skip         Skip current song
 /queue        View the current queue
-/leave        Disconnect the bot from voice channel
 ```
 
 ---
@@ -101,7 +100,7 @@ vexel-music-bot/
 │   ├── commands/         # Slash commands
 │   ├── player/           # Music player + queue system
 │   └── utils/            # Helper functions, logging
-├── .env.example          # Token config (safe to share)
+├── .env.example         
 ├── .gitignore
 ├── Dockerfile
 ├── docker-compose.yml
@@ -185,7 +184,6 @@ docker compose up -d
 /stop         Остановить воспроизведение и очистить очередь
 /skip         Пропустить текущую песню
 /queue        Показать текущую очередь
-/leave        Отключить бота от голосового канала
 ```
 
 ---
@@ -198,7 +196,7 @@ vexel-music-bot/
 │   ├── commands/         # Слэш-команды
 │   ├── player/           # Музыкальный плеер + система очереди
 │   └── utils/            # Вспомогательные функции, логирование
-├── .env.example          # Конфиг токенов (безопасно для публикации)
+├── .env.example          
 ├── .gitignore
 ├── Dockerfile
 ├── docker-compose.yml
