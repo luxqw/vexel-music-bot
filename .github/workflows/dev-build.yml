@@ -51,15 +51,16 @@ jobs:
       - name: Build and push Docker image
         id: build_push
         run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev
+          # ИСПРАВЛЕНИЕ: Используем тот же репозиторий что и main
+          IMAGE=ghcr.io/${{ github.repository_owner }}/vexel-music-bot
           SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
           
-          # Собираем с тремя тегами: версия, latest и commit hash
+          # Собираем с dev тегами в том же репозитории
           docker build -t $IMAGE:${{ steps.bump_version.outputs.new_version }} \
                        -t $IMAGE:dev-latest \
                        -t $IMAGE:dev-$SHORT_SHA .
           
-          # Пушим все теги
+          # Пушим все dev теги
           docker push $IMAGE:${{ steps.bump_version.outputs.new_version }}
           docker push $IMAGE:dev-latest
           docker push $IMAGE:dev-$SHORT_SHA
@@ -103,7 +104,7 @@ jobs:
                         \"fields\": [
                             {
                                 \"name\": \"🐳 Docker Images\",
-                                \"value\": \"\`\`\`\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev:${{ steps.bump_version.outputs.new_version }}\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev:dev-latest\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev:dev-${SHORT_SHA}\`\`\`\",
+                                \"value\": \"\`\`\`\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot:${{ steps.bump_version.outputs.new_version }}\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot:dev-latest\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot:dev-${SHORT_SHA}\`\`\`\",
                                 \"inline\": false
                             }
                         ]
