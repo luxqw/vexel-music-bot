@@ -1,197 +1,56 @@
-<h1 align="center">🎧 Vexel Music Bot</h1>
-<p align="center">
-  Powerful, Dockerized YouTube music bot for Discord built in Python — with slash commands, playlist support, auto-disconnect, admin logs, and more.
-</p>
+## 🧪 Development Environment
 
-<p align="center">
-  <img src="https://img.shields.io/github/stars/luxqw/vexel-music-bot?style=for-the-badge" />
-  <img src="https://img.shields.io/github/forks/luxqw/vexel-music-bot?style=for-the-badge" />
-  <img src="https://img.shields.io/github/issues/luxqw/vexel-music-bot?style=for-the-badge" />
-  <img src="https://img.shields.io/github/license/luxqw/vexel-music-bot?style=for-the-badge" />
-  <a href="https://discord.gg/jZtxj9Stak">
-    <img src="https://img.shields.io/badge/Discord-Join%20Server-blue?style=for-the-badge&logo=discord" />
-  </a>
-</p>
-
----
-
-## 🌐 Language / Язык
-
-- [English](https://github.com/luxqw/vexel-music-bot#-features)
-- [Русский](https://github.com/luxqw/vexel-music-bot#-%D0%BE%D1%81%D0%BE%D0%B1%D0%B5%D0%BD%D0%BD%D0%BE%D1%81%D1%82%D0%B8)
-
----
-
-## ✨ Features
-
-- ✅ Slash commands (`/play`, `/pause`, etc.)
-- 📃 YouTube playlist support
-- 💤 Automatically pauses and disconnects when no users are in the voice channel
-- 📜 Admin command logging
-- 🔄 Automatic reconnection in case of network issues
-- 🎶 High-quality audio streaming
-- 🛠️ Easy deployment with Docker
-
----
-
-## 📦 Quick Start (Docker)
-
-### 1. Clone the repository
+### Quick Start for Dev Branch
 
 ```bash
+# 1. Клонируем и переключаемся на dev
 git clone https://github.com/luxqw/vexel-music-bot.git
 cd vexel-music-bot
+git checkout dev
+
+# 2. Настраиваем dev environment
+cp .env.dev.example .env.dev
+# Редактируем .env.dev с вашими токенами
+
+# 3. Запускаем dev версию
+chmod +x scripts/deploy-dev.sh
+./scripts/deploy-dev.sh
 ```
 
-### 2. Create .env
+### Dev CI/CD Features
 
-```env
-DISCORD_TOKEN=your_bot_token
-YDL_OPTS='{"format": "bestaudio"}'
-```
+- **Automatic builds** on push to `dev` branch
+- **Separate Docker registry**: `ghcr.io/luxqw/vexel-music-bot-dev`
+- **Dev tags**: `dev-v1.0.0`, `dev-latest`, `dev-<commit>`
+- **Discord notifications** to dev channel
+- **Manual deployment** via GitHub Actions
 
-You can use `.env.example` as a template.
-
-### 3. Start with Docker Compose
+### Dev Docker Images
 
 ```bash
-docker compose up -d
+# Latest dev build
+docker pull ghcr.io/luxqw/vexel-music-bot-dev:dev-latest
+
+# Specific dev version
+docker pull ghcr.io/luxqw/vexel-music-bot-dev:dev-v1.2.3
+
+# Specific commit
+docker pull ghcr.io/luxqw/vexel-music-bot-dev:dev-a1b2c3d
 ```
 
----
-
-## 🔄 Updating the Bot
-
-If you need to update the bot to the latest version, you have two options:
-
-### Pull the latest image from GitHub:
+### Development Commands
 
 ```bash
-docker pull ghcr.io/luxqw/vexel-music-bot:latest
-docker compose up -d
-```
+# Build locally
+./scripts/build-dev-local.sh
 
-### Build the image locally:
+# Deploy dev version
+./scripts/deploy-dev.sh
 
-```bash
-docker build -t vexel-music-bot .
-docker compose up -d
-```
+# View dev logs
+docker-compose -f docker-compose.dev.yml logs -f
 
----
-
-## 🧠 Slash Commands
-
-```plaintext
-/play [url]   Play audio from YouTube URL
-/pause        Pause current playback
-/resume       Resume playback
-/stop         Stop playback and clear queue
-/skip         Skip current song
-/queue        View the current queue
-```
-
----
-
-## 📁 Project Structure
-
-```plaintext
-vexel-music-bot/
-├── bot/                  # Discord bot logic
-│   ├── commands/         # Slash commands
-│   ├── player/           # Music player + queue system
-│   └── utils/            # Helper functions, logging
-├── .env.example         
-├── .gitignore
-├── Dockerfile
-├── docker-compose.yml
-└── README.md
-```
-
----
-
-## 🇷🇺 Особенности
-
-- ✅ Слэш-команды (`/play`, `/pause`, и т.д.)
-- 📃 Поддержка плейлистов YouTube
-- 💤 Автоматическая пауза и отключение, если в голосовом канале никого нет
-- 📜 Логирование команд администраторов
-- 🔄 Автоматическое переподключение при сетевых сбоях
-- 🎶 Стриминг аудио высокого качества
-- 🛠️ Простая установка с помощью Docker
-
----
-
-## 📦 Быстрый старт (Docker)
-
-### 1. Клонировать репозиторий
-
-```bash
-git clone https://github.com/luxqw/vexel-music-bot.git
-cd vexel-music-bot
-```
-
-### 2. Создать .env
-
-```env
-DISCORD_TOKEN=your_bot_token
-YDL_OPTS='{"format": "bestaudio"}'
-```
-
-Вы можете использовать `.env.example` как шаблон.
-
-### 3. Запустить с помощью Docker Compose
-
-```bash
-docker compose up -d
-```
-
----
-
-## 🔄 Обновление бота
-
-Если вы хотите обновить бота до последней версии, у вас есть два варианта:
-
-### Скачать последнюю версию образа с GitHub:
-
-```bash
-docker pull ghcr.io/luxqw/vexel-music-bot:latest
-docker compose up -d
-```
-
-### Собрать образ локально:
-
-```bash
-docker build -t vexel-music-bot .
-docker compose up -d
-```
-
----
-
-## 🧠 Слэш-команды
-
-```plaintext
-/play [url]   Воспроизведение аудио с YouTube
-/pause        Поставить текущий трек на паузу
-/resume       Возобновить воспроизведение
-/stop         Остановить воспроизведение и очистить очередь
-/skip         Пропустить текущую песню
-/queue        Показать текущую очередь
-```
-
----
-
-## 📁 Структура проекта
-
-```plaintext
-vexel-music-bot/
-├── bot/                  # Логика Discord-бота
-│   ├── commands/         # Слэш-команды
-│   ├── player/           # Музыкальный плеер + система очереди
-│   └── utils/            # Вспомогательные функции, логирование
-├── .env.example          
-├── .gitignore
-├── Dockerfile
-├── docker-compose.yml
-└── README.md
+# Update dev environment
+docker-compose -f docker-compose.dev.yml pull
+docker-compose -f docker-compose.dev.yml up -d
 ```
