@@ -1,0 +1,44 @@
+name: Dev Release Notify
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    # Только для dev релизов (теги начинающиеся с dev-v)
+    if: startsWith(github.event.release.tag_name, 'dev-v')
+
+    steps:
+      - name: Notify Discord about Dev Release
+        env:
+          DISCORD_WEBHOOK_DEV: ${{ secrets.DISCORD_WEBHOOK_DEV }}
+        run: |
+          WEBHOOK_URL="${DISCORD_WEBHOOK_DEV:-${{ secrets.DISCORD_WEBHOOK }}}"
+          
+          curl -H "Content-Type: application/json" \
+               -d "{
+                    \"embeds\": [{
+                        \"title\": \"🧪 New Dev Release Published!\",
+                        \"description\": \"**Release Name:** ${{ github.event.release.name }}\\n**Tag:** \`${{ github.event.release.tag_name }}\`\\n**Author:** ${{ github.event.release.author.login }}\\n**Release URL:** [View Release](${{ github.event.release.html_url }})\",
+                        \"url\": \"${{ github.event.release.html_url }}\",
+                        \"color\": 16776960,
+                        \"thumbnail\": {
+                            \"url\": \"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\"
+                        },
+                        \"footer\": {
+                            \"text\": \"Dev Environment • Release\",
+                            \"icon_url\": \"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\"
+                        },
+                        \"timestamp\": \"${{ github.event.release.published_at }}\",
+                        \"fields\": [
+                            {
+                                \"name\": \"🐳 Docker Image\",
+                                \"value\": \"\`\`\`\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev:${{ github.event.release.tag_name }}\`\`\`\",
+                                \"inline\": false
+                            }
+                        ]
+                    }]
+                }" \
+               $WEBHOOK_URL
