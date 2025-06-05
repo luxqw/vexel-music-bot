@@ -199,6 +199,28 @@ def create_idle_embed() -> discord.Embed:
     )
     return embed
 
+async def send_temp_message(interaction: discord.Interaction, content: str, embed: discord.Embed = None, ephemeral: bool = True, delete_after: int = 5):
+    """Отправить временное сообщение которое удалится через указанное время"""
+    try:
+        if embed:
+            message = await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+            message = await interaction.followup.send(content, ephemeral=ephemeral)
+        
+        # Если ephemeral=True, Discord сам удалит сообщение, поэтому не пытаемся удалить
+        if not ephemeral and delete_after > 0:
+            await asyncio.sleep(delete_after)
+            try:
+                await message.delete()
+            except:
+                pass
+    except:
+        # Fallback на обычную отправку
+        if embed:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(content, ephemeral=ephemeral)
+
 class MusicPlayerView(discord.ui.View):
     """Упрощенные кнопки управления музыкой"""
     
@@ -261,38 +283,26 @@ class MusicPlayerView(discord.ui.View):
         leave_btn.callback = self.leave_callback
         self.add_item(leave_btn)
 
-    async def send_temp_message(self, interaction: discord.Interaction, content: str, ephemeral: bool = True):
-        """Отправить временное сообщение которое удалится через 5 секунд"""
-        if ephemeral:
-            await interaction.response.send_message(content, ephemeral=True)
-        else:
-            message = await interaction.response.send_message(content)
-            await asyncio.sleep(5)
-            try:
-                await message.delete()
-            except:
-                pass
-
     async def shuffle_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         if len(guild_data_obj.queue.tracks) < 2:
-            await self.send_temp_message(interaction, "Недостаточно треков для перемешивания")
+            await interaction.response.send_message("Недостаточно треков для перемешивания", ephemeral=True)
             return
         
         guild_data_obj.queue.shuffle()
-        await self.send_temp_message(interaction, "Очередь перемешана")
+        await interaction.response.send_message("Очередь перемешана", ephemeral=True)
 
     async def volume_down_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         guild_data_obj.volume = max(0, guild_data_obj.volume - 10)
         await self.update_player_message(interaction)
-        await self.send_temp_message(interaction, f"Громкость: {guild_data_obj.volume}%")
+        await interaction.response.send_message(f"Громкость: {guild_data_obj.volume}%", ephemeral=True)
 
     async def volume_up_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         guild_data_obj.volume = min(200, guild_data_obj.volume + 10)
         await self.update_player_message(interaction)
-        await self.send_temp_message(interaction, f"Громкость: {guild_data_obj.volume}%")
+        await interaction.response.send_message(f"Громкость: {guild_data_obj.volume}%", ephemeral=True)
 
     async def repeat_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
@@ -308,58 +318,58 @@ class MusicPlayerView(discord.ui.View):
             mode_text = "Повтор выключен"
         
         await self.update_player_message(interaction)
-        await self.send_temp_message(interaction, mode_text)
+        await interaction.response.send_message(mode_text, ephemeral=True)
 
     async def play_pause_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         vc = guild_data_obj.voice_client
         
         if not vc:
-            await self.send_temp_message(interaction, "Бот не подключен к каналу")
+            await interaction.response.send_message("Бот не подключен к каналу", ephemeral=True)
             return
         
         if vc.is_playing():
             vc.pause()
             guild_data_obj.is_paused = True
             await self.update_player_message(interaction)
-            await self.send_temp_message(interaction, "Пауза")
+            await interaction.response.send_message("Пауза", ephemeral=True)
         elif vc.is_paused():
             vc.resume()
             guild_data_obj.is_paused = False
             await self.update_player_message(interaction)
-            await self.send_temp_message(interaction, "Продолжено")
+            await interaction.response.send_message("Продолжено", ephemeral=True)
         else:
-            await self.send_temp_message(interaction, "Нечего воспроизводить")
+            await interaction.response.send_message("Нечего воспроизводить", ephemeral=True)
 
     async def stop_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         vc = guild_data_obj.voice_client
         
         if not vc:
-            await self.send_temp_message(interaction, "Бот не подключен")
+            await interaction.response.send_message("Бот не подключен", ephemeral=True)
             return
         
         vc.stop()
         guild_data_obj.queue.clear()
         await self.update_player_message(interaction, stopped=True)
-        await self.send_temp_message(interaction, "Воспроизведение остановлено")
+        await interaction.response.send_message("Воспроизведение остановлено", ephemeral=True)
 
     async def next_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         vc = guild_data_obj.voice_client
         
         if not vc or not vc.is_playing():
-            await self.send_temp_message(interaction, "Нечего пропускать")
+            await interaction.response.send_message("Нечего пропускать", ephemeral=True)
             return
         
         vc.stop()
-        await self.send_temp_message(interaction, "Трек пропущен")
+        await interaction.response.send_message("Трек пропущен", ephemeral=True)
 
     async def queue_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         
         if guild_data_obj.queue.is_empty:
-            await self.send_temp_message(interaction, "Очередь пуста")
+            await interaction.response.send_message("Очередь пуста", ephemeral=True)
             return
         
         tracks = guild_data_obj.queue.tracks[:10]
@@ -377,14 +387,14 @@ class MusicPlayerView(discord.ui.View):
         if len(guild_data_obj.queue.tracks) > 10:
             embed.set_footer(text=f"Показано 10 из {len(guild_data_obj.queue.tracks)} треков")
         
-        await interaction.response.send_message(embed=embed, ephemeral=True, delete_after=10)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def leave_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         vc = guild_data_obj.voice_client
         
         if not vc:
-            await self.send_temp_message(interaction, "Бот не подключен")
+            await interaction.response.send_message("Бот не подключен", ephemeral=True)
             return
         
         guild_data_obj.queue.clear()
@@ -401,7 +411,7 @@ class MusicPlayerView(discord.ui.View):
             except:
                 pass
         
-        await self.send_temp_message(interaction, "Бот отключен от канала")
+        await interaction.response.send_message("Бот отключен от канала", ephemeral=True)
 
     async def update_player_message(self, interaction: discord.Interaction, stopped: bool = False):
         """Обновить сообщение плеера"""
@@ -594,13 +604,13 @@ async def play(interaction: discord.Interaction, query: str):
     # Подключаемся к голосовому каналу
     if not guild_data_obj.voice_client:
         if not interaction.user.voice or not interaction.user.voice.channel:
-            await interaction.followup.send("Сначала зайдите в голосовой канал", ephemeral=True, delete_after=5)
+            await interaction.followup.send("Сначала зайдите в голосовой канал", ephemeral=True)
             return
         
         try:
             guild_data_obj.voice_client = await interaction.user.voice.channel.connect()
         except Exception as e:
-            await interaction.followup.send(f"Не удалось подключиться к каналу: {e}", ephemeral=True, delete_after=5)
+            await interaction.followup.send(f"Не удалось подключиться к каналу: {e}", ephemeral=True)
             return
     
     try:
@@ -613,7 +623,7 @@ async def play(interaction: discord.Interaction, query: str):
                 description="Ничего не найдено по вашему запросу",
                 color=0xFF0000
             )
-            await interaction.followup.send(embed=embed, ephemeral=True, delete_after=5)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
         
         # Добавляем треки в очередь
@@ -627,7 +637,7 @@ async def play(interaction: discord.Interaction, query: str):
             success_text = f"Добавлен трек: {tracks[0].title}"
         
         # Отправляем уведомление о добавлении
-        await interaction.followup.send(success_text, ephemeral=True, delete_after=5)
+        await interaction.followup.send(success_text, ephemeral=True)
         
         # Создаем или обновляем плеер
         if not guild_data_obj.player_message:
@@ -649,7 +659,7 @@ async def play(interaction: discord.Interaction, query: str):
             description=str(e),
             color=0xFF0000
         )
-        await interaction.followup.send(embed=embed, ephemeral=True, delete_after=5)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 @tree.command(name="player", description="Показать музыкальный плеер")
 async def player(interaction: discord.Interaction):
@@ -667,7 +677,7 @@ async def player(interaction: discord.Interaction):
     if guild_data_obj.player_message:
         try:
             await guild_data_obj.player_message.edit(embed=embed, view=view)
-            await interaction.response.send_message("Плеер обновлен", ephemeral=True, delete_after=5)
+            await interaction.response.send_message("Плеер обновлен", ephemeral=True)
         except:
             guild_data_obj.player_message = await interaction.response.send_message(embed=embed, view=view)
     else:
@@ -697,7 +707,7 @@ async def help_cmd(interaction: discord.Interaction):
         inline=False
     )
     
-    await interaction.response.send_message(embed=embed, ephemeral=True, delete_after=10)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 if __name__ == "__main__":
     bot.run(TOKEN)
