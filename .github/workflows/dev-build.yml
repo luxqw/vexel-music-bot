@@ -1,0 +1,112 @@
+name: Dev Docker Image CI
+
+on:
+  push:
+    branches: [ dev ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Нужно для работы с git-тегами
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Get latest dev version tag
+        id: get_version
+        run: |
+          latest_tag=$(git tag --list 'dev-v*' | sort -V | tail -n1)
+          if [[ -z "$latest_tag" ]]; then
+            latest_tag="dev-v1.0.0"
+          fi
+          echo "latest_tag=$latest_tag" >> $GITHUB_OUTPUT
+
+      - name: Bump patch version and create new dev tag
+        id: bump_version
+        run: |
+          old_version="${{ steps.get_version.outputs.latest_tag }}"
+          # Убираем префикс dev-v
+          version_number="${old_version#dev-v}"
+          IFS='.' read -r major minor patch <<<"$version_number"
+          patch=$((patch+1))
+          new_version="dev-v$major.$minor.$patch"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag "$new_version"
+          git push origin "$new_version"
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        id: build_push
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          
+          # Собираем с тремя тегами: версия, latest и commit hash
+          docker build -t $IMAGE:${{ steps.bump_version.outputs.new_version }} \
+                       -t $IMAGE:dev-latest \
+                       -t $IMAGE:dev-$SHORT_SHA .
+          
+          # Пушим все теги
+          docker push $IMAGE:${{ steps.bump_version.outputs.new_version }}
+          docker push $IMAGE:dev-latest
+          docker push $IMAGE:dev-$SHORT_SHA
+          
+          echo "image_tags=$IMAGE:${{ steps.bump_version.outputs.new_version }}, $IMAGE:dev-latest, $IMAGE:dev-$SHORT_SHA" >> $GITHUB_OUTPUT
+
+      - name: Notify Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK_DEV: ${{ secrets.DISCORD_WEBHOOK_DEV }}
+        run: |
+          STATUS_MSG=""
+          COLOR=16711680  # Red by default
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n1 | sed 's/"/\\"/g')
+          
+          if [[ "${{ job.status }}" == "success" ]]; then
+            STATUS_MSG="🚀 Dev Build Completed Successfully!"
+            COLOR=3066993  # Green for success
+            EMOJI="✅"
+          else
+            STATUS_MSG="💥 Dev Build Failed!"
+            EMOJI="❌"
+          fi
+
+          # Используем dev webhook если есть, иначе основной
+          WEBHOOK_URL="${DISCORD_WEBHOOK_DEV:-${{ secrets.DISCORD_WEBHOOK }}}"
+          
+          curl -H "Content-Type: application/json" \
+               -d "{
+                    \"embeds\": [{
+                        \"title\": \"${STATUS_MSG}\",
+                        \"description\": \"**Branch:** \`dev\`\\n**Tag:** \`${{ steps.bump_version.outputs.new_version }}\`\\n**Commit:** [\`${SHORT_SHA}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})\\n**Message:** ${COMMIT_MSG}\",
+                        \"url\": \"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+                        \"color\": ${COLOR},
+                        \"footer\": {
+                            \"text\": \"Dev Environment • GitHub Actions\",
+                            \"icon_url\": \"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\"
+                        },
+                        \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",
+                        \"fields\": [
+                            {
+                                \"name\": \"🐳 Docker Images\",
+                                \"value\": \"\`\`\`\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev:${{ steps.bump_version.outputs.new_version }}\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev:dev-latest\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev:dev-${SHORT_SHA}\`\`\`\",
+                                \"inline\": false
+                            }
+                        ]
+                    }]
+                }" \
+               $WEBHOOK_URL
