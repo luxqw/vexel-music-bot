@@ -151,20 +151,17 @@ def get_guild_data(guild_id: int) -> GuildMusicData:
         guild_data[guild_id] = GuildMusicData(queue=MusicQueue())
     return guild_data[guild_id]
 
-def create_player_embed(track: Track, guild_data: GuildMusicData) -> discord.Embed:
-    """Создать embed для плеера"""
-    embed = discord.Embed(
-        title="Сейчас играет",
-        color=0x2F3136
+def create_player_embed(track: Track, guild_data_obj: GuildMusicData) -> discord.Embed:
+    """Создать единый embed для плеера в стиле VK Music Bot"""
+    # Минималистичный темно-серый embed
+    embed = discord.Embed(color=0x36393F)  # Цвет как у Discord
+    
+    # Заголовок
+    embed.add_field(
+        name="Сейчас играет",
+        value=f"**{track.title}**\n{track.uploader or 'Неизвестный исполнитель'}",
+        inline=False
     )
-    
-    # Основная информация о треке
-    track_info = f"**{track.title}**\n{track.uploader or 'Неизвестный исполнитель'}"
-    embed.description = track_info
-    
-    # Миниатюра
-    if track.thumbnail:
-        embed.set_thumbnail(url=track.thumbnail)
     
     # Длительность
     embed.add_field(
@@ -180,49 +177,43 @@ def create_player_embed(track: Track, guild_data: GuildMusicData) -> discord.Emb
         inline=False
     )
     
-    # Треков в очереди
-    queue_count = len(guild_data.queue.tracks)
+    # Пустое поле для разделения
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
+    
+    # Треков в очереди внизу
+    queue_count = len(guild_data_obj.queue.tracks)
     embed.add_field(
         name="",
         value=f"**Треков в очереди:** {queue_count}",
         inline=False
     )
     
+    # Thumbnail в правом верхнем углу
+    if track.thumbnail:
+        embed.set_thumbnail(url=track.thumbnail)
+    
     return embed
 
 def create_idle_embed() -> discord.Embed:
     """Embed когда музыка не играет"""
-    embed = discord.Embed(
-        title="Плеер остановлен",
-        description="Используйте /play чтобы включить музыку",
-        color=0x2F3136
+    embed = discord.Embed(color=0x36393F)
+    
+    embed.add_field(
+        name="Плеер остановлен",
+        value="Используйте /play чтобы включить музыку",
+        inline=False
     )
+    
+    # Пустые поля для сохранения структуры
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
+    embed.add_field(name="\u200b", value="\u200b", inline=False)
+    embed.add_field(name="", value="**Треков в очереди:** 0", inline=False)
+    
     return embed
 
-async def send_temp_message(interaction: discord.Interaction, content: str, embed: discord.Embed = None, ephemeral: bool = True, delete_after: int = 5):
-    """Отправить временное сообщение которое удалится через указанное время"""
-    try:
-        if embed:
-            message = await interaction.followup.send(embed=embed, ephemeral=ephemeral)
-        else:
-            message = await interaction.followup.send(content, ephemeral=ephemeral)
-        
-        # Если ephemeral=True, Discord сам удалит сообщение, поэтому не пытаемся удалить
-        if not ephemeral and delete_after > 0:
-            await asyncio.sleep(delete_after)
-            try:
-                await message.delete()
-            except:
-                pass
-    except:
-        # Fallback на обычную отправку
-        if embed:
-            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
-        else:
-            await interaction.response.send_message(content, ephemeral=ephemeral)
-
 class MusicPlayerView(discord.ui.View):
-    """Упрощенные кнопки управления музыкой"""
+    """Кнопки управления в едином стиле"""
     
     def __init__(self, guild_id: int):
         super().__init__(timeout=None)
@@ -230,13 +221,13 @@ class MusicPlayerView(discord.ui.View):
         self.setup_buttons()
     
     def setup_buttons(self):
-        """Настройка кнопок"""
+        """Настройка кнопок в компактном формате"""
         guild_data_obj = get_guild_data(self.guild_id)
         
         # Очищаем кнопки
         self.clear_items()
         
-        # Ряд 1: Shuffle, Volume down, Volume up, Repeat
+        # Ряд 1: 4 кнопки - Shuffle, Vol-, Vol+, Repeat  
         shuffle_btn = discord.ui.Button(emoji="🔀", style=discord.ButtonStyle.secondary, row=0)
         shuffle_btn.callback = self.shuffle_callback
         self.add_item(shuffle_btn)
@@ -257,7 +248,10 @@ class MusicPlayerView(discord.ui.View):
         repeat_btn.callback = self.repeat_callback
         self.add_item(repeat_btn)
         
-        # Ряд 2: Play/Pause, Stop, Next
+        # Ряд 2: 5 кнопок - Prev, Play/Pause, Stop, Next, Forward
+        prev_btn = discord.ui.Button(emoji="⏮️", style=discord.ButtonStyle.secondary, row=1, disabled=True)
+        self.add_item(prev_btn)
+        
         # Объединенная кнопка Play/Pause
         if guild_data_obj.voice_client and guild_data_obj.voice_client.is_playing():
             play_pause_btn = discord.ui.Button(emoji="⏸️", style=discord.ButtonStyle.secondary, row=1)
@@ -274,10 +268,22 @@ class MusicPlayerView(discord.ui.View):
         next_btn.callback = self.next_callback
         self.add_item(next_btn)
         
-        # Ряд 3: Queue, Leave
+        forward_btn = discord.ui.Button(emoji="⏩", style=discord.ButtonStyle.secondary, row=1, disabled=True)
+        self.add_item(forward_btn)
+        
+        # Ряд 3: 5 кнопок - Add, Queue, Lyrics, Save, Leave
+        add_btn = discord.ui.Button(emoji="➕", style=discord.ButtonStyle.success, row=2, disabled=True)
+        self.add_item(add_btn)
+        
         queue_btn = discord.ui.Button(emoji="📋", style=discord.ButtonStyle.secondary, row=2)
         queue_btn.callback = self.queue_callback
         self.add_item(queue_btn)
+        
+        lyrics_btn = discord.ui.Button(emoji="🎤", style=discord.ButtonStyle.secondary, row=2, disabled=True)
+        self.add_item(lyrics_btn)
+        
+        save_btn = discord.ui.Button(emoji="💾", style=discord.ButtonStyle.secondary, row=2, disabled=True)
+        self.add_item(save_btn)
         
         leave_btn = discord.ui.Button(emoji="🚪", style=discord.ButtonStyle.danger, row=2)
         leave_btn.callback = self.leave_callback
@@ -381,7 +387,7 @@ class MusicPlayerView(discord.ui.View):
         embed = discord.Embed(
             title="Очередь треков",
             description=queue_text,
-            color=0x2F3136
+            color=0x36393F
         )
         
         if len(guild_data_obj.queue.tracks) > 10:
@@ -688,7 +694,7 @@ async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Справка по командам",
         description="Музыкальный бот для Discord",
-        color=0x2F3136
+        color=0x36393F
     )
     
     embed.add_field(
