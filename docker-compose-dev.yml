@@ -1,0 +1,23 @@
+services:
+  bot-dev:
+    image: ghcr.io/luxqw/vexel-music-bot-dev:dev-latest
+    container_name: vexel-music-bot-dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env.dev
+    volumes:
+      - ./bot:/app/bot
+      - ./logs:/app/logs
+    working_dir: /app
+    restart: unless-stopped
+    command: ["python3", "main.py"]
+    networks:
+      - bot-dev-network
+    ports:
+      - "8080:8080"  # Для healthcheck или метрик если нужно
+
+networks:
+  bot-dev-network:
+    driver: bridge
