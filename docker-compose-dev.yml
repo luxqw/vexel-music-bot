@@ -1,6 +1,7 @@
 services:
   bot-dev:
-    image: ghcr.io/luxqw/vexel-music-bot-dev:dev-latest
+    # ИСПРАВЛЕНИЕ: Используем тот же репозиторий с dev-latest тегом
+    image: ghcr.io/luxqw/vexel-music-bot:dev-latest
     container_name: vexel-music-bot-dev
     build:
       context: .
