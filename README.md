@@ -41,12 +41,6 @@ docker pull ghcr.io/luxqw/vexel-music-bot-dev:dev-a1b2c3d
 ### Development Commands
 
 ```bash
-# Build locally
-./scripts/build-dev-local.sh
-
-# Deploy dev version
-./scripts/deploy-dev.sh
-
 # View dev logs
 docker-compose -f docker-compose.dev.yml logs -f
 
