@@ -35,7 +35,7 @@ jobs:
                         \"fields\": [
                             {
                                 \"name\": \"🐳 Docker Image\",
-                                \"value\": \"\`\`\`\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot-dev:${{ github.event.release.tag_name }}\`\`\`\",
+                                \"value\": \"\`\`\`\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot:${{ github.event.release.tag_name }}\`\`\`\",
                                 \"inline\": false
                             }
                         ]
