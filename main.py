@@ -580,20 +580,20 @@ async def on_voice_state_update(member, before, after):
 @app_commands.describe(query="Ссылка на YouTube или поисковый запрос")
 async def play(interaction: discord.Interaction, query: str):
     """Команда воспроизведения музыки"""
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)  # Делаем defer ephemeral
     
     guild_data_obj = get_guild_data(interaction.guild.id)
     
     # Подключаемся к голосовому каналу
     if not guild_data_obj.voice_client:
         if not interaction.user.voice or not interaction.user.voice.channel:
-            await interaction.followup.send("❌ Сначала зайдите в голосовой канал!")
+            await interaction.followup.send("Сначала зайдите в голосовой канал", ephemeral=True)
             return
         
         try:
             guild_data_obj.voice_client = await interaction.user.voice.channel.connect()
         except Exception as e:
-            await interaction.followup.send(f"❌ Не удалось подключиться к каналу: {e}")
+            await interaction.followup.send(f"Не удалось подключиться к каналу: {e}", ephemeral=True)
             return
     
     try:
@@ -601,12 +601,7 @@ async def play(interaction: discord.Interaction, query: str):
         tracks, is_playlist = await extract_track_info(query, interaction.user.display_name)
         
         if not tracks:
-            error_embed = discord.Embed(
-                title="❌ Ошибка!",
-                description="Ничего не найдено по вашему запросу",
-                color=0xFF0000
-            )
-            await interaction.followup.send(embed=error_embed, ephemeral=True)
+            await interaction.followup.send("Ничего не найдено по вашему запросу", ephemeral=True)
             return
         
         # Добавляем треки в очередь
@@ -614,15 +609,15 @@ async def play(interaction: discord.Interaction, query: str):
         
         if is_playlist:
             guild_data_obj.queue.add_multiple(tracks)
-            success_text = f"📃 Добавлен плейлист: **{len(tracks)}** треков"
+            success_text = f"Добавлен плейлист: {len(tracks)} треков"
         else:
             guild_data_obj.queue.add(tracks[0])
-            success_text = f"➕ Добавлен трек: **{tracks[0].title}**"
+            success_text = f"Добавлен трек: {tracks[0].title}"
         
-        # Отправляем уведомление о добавлении
+        # Отправляем уведомление о добавлении только тому кто добавил
         await interaction.followup.send(success_text, ephemeral=True)
         
-        # Создаем или обновляем плеер
+        # Создаем или обновляем плеер (публично)
         if not guild_data_obj.player_message:
             if guild_data_obj.queue.current:
                 embed = create_player_embed(guild_data_obj.queue.current, guild_data_obj)
@@ -630,19 +625,15 @@ async def play(interaction: discord.Interaction, query: str):
                 embed = create_idle_embed()
             
             view = MusicPlayerView(interaction.guild.id)
-            guild_data_obj.player_message = await interaction.followup.send(embed=embed, view=view)
+            # Отправляем плеер публично в канал
+            guild_data_obj.player_message = await interaction.channel.send(embed=embed, view=view)
         
         # Начинаем воспроизведение если нужно
         if was_empty and not guild_data_obj.voice_client.is_playing():
             await play_next(interaction.guild.id)
     
     except Exception as e:
-        error_embed = discord.Embed(
-            title="❌ Ошибка!",
-            description=str(e),
-            color=0xFF0000
-        )
-        await interaction.followup.send(embed=error_embed, ephemeral=True)
+        await interaction.followup.send(f"Ошибка: {str(e)}", ephemeral=True)
 
 @tree.command(name="player", description="Показать музыкальный плеер")
 async def player(interaction: discord.Interaction):
