@@ -248,8 +248,7 @@ class MusicPlayerView(discord.ui.View):
         self.add_item(repeat_btn)
         
         # Второй ряд
-        prev_btn = discord.ui.Button(emoji="⏮️", style=discord.ButtonStyle.secondary, row=1)
-        prev_btn.callback = self.previous_callback
+        prev_btn = discord.ui.Button(emoji="⏮️", style=discord.ButtonStyle.secondary, row=1, disabled=True)
         self.add_item(prev_btn)
         
         # Play/Pause кнопка
@@ -268,25 +267,21 @@ class MusicPlayerView(discord.ui.View):
         next_btn.callback = self.next_callback
         self.add_item(next_btn)
         
-        forward_btn = discord.ui.Button(emoji="⏩", style=discord.ButtonStyle.secondary, row=1)
-        forward_btn.callback = self.forward_callback
+        forward_btn = discord.ui.Button(emoji="⏩", style=discord.ButtonStyle.secondary, row=1, disabled=True)
         self.add_item(forward_btn)
         
         # Третий ряд
-        add_btn = discord.ui.Button(emoji="➕", style=discord.ButtonStyle.success, row=2)
-        add_btn.callback = self.add_callback
+        add_btn = discord.ui.Button(emoji="➕", style=discord.ButtonStyle.success, row=2, disabled=True)
         self.add_item(add_btn)
         
         queue_btn = discord.ui.Button(emoji="📋", style=discord.ButtonStyle.secondary, row=2)
         queue_btn.callback = self.queue_callback
         self.add_item(queue_btn)
         
-        lyrics_btn = discord.ui.Button(emoji="🎤", style=discord.ButtonStyle.secondary, row=2)
-        lyrics_btn.callback = self.lyrics_callback
+        lyrics_btn = discord.ui.Button(emoji="🎤", style=discord.ButtonStyle.secondary, row=2, disabled=True)
         self.add_item(lyrics_btn)
         
-        save_btn = discord.ui.Button(emoji="💾", style=discord.ButtonStyle.secondary, row=2)
-        save_btn.callback = self.save_callback
+        save_btn = discord.ui.Button(emoji="💾", style=discord.ButtonStyle.secondary, row=2, disabled=True)
         self.add_item(save_btn)
         
         leave_btn = discord.ui.Button(emoji="🚪", style=discord.ButtonStyle.danger, row=2)
@@ -333,9 +328,6 @@ class MusicPlayerView(discord.ui.View):
         await self.update_player_message(interaction)
         await interaction.response.send_message(mode_text, ephemeral=True)
 
-    async def previous_callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message("⏮️ Функция в разработке", ephemeral=True)
-
     async def play_pause_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         vc = guild_data_obj.voice_client
@@ -381,12 +373,6 @@ class MusicPlayerView(discord.ui.View):
         vc.stop()  # Вызовет play_next
         await interaction.response.send_message("⏭️ Трек пропущен", ephemeral=True)
 
-    async def forward_callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message("⏩ Функция в разработке", ephemeral=True)
-
-    async def add_callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message("➕ Используйте команду `/play <запрос>` для добавления музыки", ephemeral=True)
-
     async def queue_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         
@@ -410,12 +396,6 @@ class MusicPlayerView(discord.ui.View):
             embed.set_footer(text=f"Показано 10 из {len(guild_data_obj.queue.tracks)} треков")
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    async def lyrics_callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message("🎤 Функция поиска текстов в разработке", ephemeral=True)
-
-    async def save_callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message("💾 Функция сохранения в разработке", ephemeral=True)
 
     async def leave_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
