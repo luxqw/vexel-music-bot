@@ -576,7 +576,7 @@ async def on_voice_state_update(member, before, after):
                 vc.resume()
                 print(f"▶️ Музыка возобновлена в {vc.channel.name}")
 
-@tree.command(name="play", description="🎵 Воспроизвести музыку")
+@tree.command(name="play", description="Воспроизвести музыку")
 @app_commands.describe(query="Ссылка на YouTube или поисковый запрос")
 async def play(interaction: discord.Interaction, query: str):
     """Команда воспроизведения музыки"""
@@ -644,7 +644,7 @@ async def play(interaction: discord.Interaction, query: str):
         )
         await interaction.followup.send(embed=error_embed, ephemeral=True)
 
-@tree.command(name="player", description="🎵 Показать музыкальный плеер")
+@tree.command(name="player", description="Показать музыкальный плеер")
 async def player(interaction: discord.Interaction):
     """Показать плеер"""
     guild_data_obj = get_guild_data(interaction.guild.id)
@@ -660,32 +660,33 @@ async def player(interaction: discord.Interaction):
     if guild_data_obj.player_message:
         try:
             await guild_data_obj.player_message.edit(embed=embed, view=view)
-            await interaction.response.send_message("🎵 Плеер обновлен", ephemeral=True)
+            await interaction.response.send_message("Плеер обновлен", ephemeral=True)
         except:
             guild_data_obj.player_message = await interaction.response.send_message(embed=embed, view=view)
     else:
         guild_data_obj.player_message = await interaction.response.send_message(embed=embed, view=view)
 
-@tree.command(name="help", description="📖 Показать справку")
+@tree.command(name="help", description="Показать справку по командам")
 async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="📖 Справка по командам",
-        description="Музыкальный бот с красивым интерфейсом",
+        title="Справка по командам",
+        description="Музыкальный бот для Discord",
         color=0x2F3136
     )
     
     embed.add_field(
-        name="🎵 Основные команды",
+        name="Команды",
         value="""
-`/play <запрос>` - Добавить музыку
-`/player` - Показать плеер с кнопками
+/play <запрос> - Добавить музыку
+/player - Показать плеер с кнопками управления
+/help - Показать эту справку
         """,
         inline=False
     )
     
     embed.add_field(
-        name="🎛️ Управление",
-        value="Используйте кнопки плеера для управления музыкой",
+        name="Управление",
+        value="Используйте кнопки в плеере для управления воспроизведением",
         inline=False
     )
     
