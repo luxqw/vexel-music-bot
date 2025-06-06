@@ -13,6 +13,7 @@ from datetime import datetime
 # Конфигурация
 TOKEN = os.getenv("DISCORD_TOKEN")
 MAX_PLAYLIST_SIZE = 100
+QUEUE_PAGE_SIZE = 10
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -118,7 +119,7 @@ class GuildMusicData:
     queue: MusicQueue
     voice_client: Optional[discord.VoiceClient] = None
     player_message: Optional[discord.Message] = None
-    volume: int = 100
+    volume: int = 100  # Процентное значение
     start_time: Optional[float] = None
     is_paused: bool = False
     
@@ -151,16 +152,20 @@ def get_guild_data(guild_id: int) -> GuildMusicData:
         guild_data[guild_id] = GuildMusicData(queue=MusicQueue())
     return guild_data[guild_id]
 
-def create_player_embed(track: Track, guild_data_obj: GuildMusicData) -> discord.Embed:
-    """Создать единый embed для плеера в минималистичном стиле"""
-    embed = discord.Embed(color=0x2F3136)  # Темно-серый Discord цвет
-    
-    # Основной блок информации
-    embed.add_field(
-        name="Сейчас играет",
-        value=f"**{track.title}**\n{track.uploader or 'Неизвестный исполнитель'}",
-        inline=False
+def create_player_embed(track: Track, guild_data: GuildMusicData) -> discord.Embed:
+    """Создать embed для плеера (в стиле VK Music Bot)"""
+    embed = discord.Embed(
+        title="Сейчас играет",
+        color=0x2F3136  # Темно-серый цвет как у Discord
     )
+    
+    # Основная информация о треке
+    track_info = f"**{track.title}**\n{track.uploader or 'Неизвестный исполнитель'}"
+    embed.description = track_info
+    
+    # Миниатюра справа
+    if track.thumbnail:
+        embed.set_thumbnail(url=track.thumbnail)
     
     # Длительность
     embed.add_field(
@@ -170,213 +175,219 @@ def create_player_embed(track: Track, guild_data_obj: GuildMusicData) -> discord
     )
     
     # Источник и кто добавил
+    source_text = f"🎵 YouTube (добавлен: @{track.requester})"
     embed.add_field(
         name="",
-        value=f"YouTube (добавлен: @{track.requester})",
+        value=source_text,
         inline=False
     )
     
-    # Разделитель (невидимое поле)
-    embed.add_field(name="\u200b", value="\u200b", inline=False)
-    
     # Треков в очереди
-    queue_count = len(guild_data_obj.queue.tracks)
+    queue_count = len(guild_data.queue.tracks)
     embed.add_field(
         name="",
         value=f"**Треков в очереди:** {queue_count}",
         inline=False
     )
     
-    # Обложка справа
-    if track.thumbnail:
-        embed.set_thumbnail(url=track.thumbnail)
-    
     return embed
 
 def create_idle_embed() -> discord.Embed:
     """Embed когда музыка не играет"""
-    embed = discord.Embed(color=0x2F3136)
-    
-    embed.add_field(
-        name="Плеер остановлен",
-        value="Используйте /play чтобы включить музыку",
-        inline=False
+    embed = discord.Embed(
+        title="🎵 Плеер остановлен",
+        description="Используйте `/play` чтобы включить музыку",
+        color=0x2F3136
     )
-    
-    # Пустые поля для сохранения структуры
-    embed.add_field(name="\u200b", value="\u200b", inline=False)
-    embed.add_field(name="\u200b", value="\u200b", inline=False)
-    embed.add_field(name="\u200b", value="\u200b", inline=False)
-    embed.add_field(name="", value="**Треков в очереди:** 0", inline=False)
-    
     return embed
 
 class MusicPlayerView(discord.ui.View):
-    """Минималистичные кнопки управления"""
+    """Кнопки управления музыкой в стиле VK"""
     
     def __init__(self, guild_id: int):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # Бессрочные кнопки
         self.guild_id = guild_id
         self.setup_buttons()
     
     def setup_buttons(self):
-        """Настройка лаконичных кнопок"""
+        """Настройка кнопок"""
         guild_data_obj = get_guild_data(self.guild_id)
         
-        # Очищаем кнопки
+        # Первый ряд: Shuffle, Volume Down, Volume%, Volume Up, Repeat
+        # Второй ряд: Previous, Play/Pause, Stop, Next, Forward
+        # Третий ряд: Add, Queue, Lyrics, Save, Leave
+        
+        # Очищаем существующие кнопки
         self.clear_items()
         
-        # Ряд 1: Основные кнопки управления
-        # Play/Pause
-        if guild_data_obj.voice_client and guild_data_obj.voice_client.is_playing():
-            play_pause_btn = discord.ui.Button(emoji="⏸️", style=discord.ButtonStyle.secondary, row=0)
-        else:
-            play_pause_btn = discord.ui.Button(emoji="▶️", style=discord.ButtonStyle.secondary, row=0)
-        play_pause_btn.callback = self.play_pause_callback
-        self.add_item(play_pause_btn)
-        
-        # Stop
-        stop_btn = discord.ui.Button(emoji="⏹️", style=discord.ButtonStyle.secondary, row=0)
-        stop_btn.callback = self.stop_callback
-        self.add_item(stop_btn)
-        
-        # Next
-        next_btn = discord.ui.Button(emoji="⏭️", style=discord.ButtonStyle.secondary, row=0)
-        next_btn.callback = self.next_callback
-        self.add_item(next_btn)
-        
-        # Ряд 2: Дополнительные функции
-        # Shuffle
-        shuffle_btn = discord.ui.Button(emoji="🔀", style=discord.ButtonStyle.secondary, row=1)
+        # Первый ряд
+        shuffle_btn = discord.ui.Button(emoji="🔀", style=discord.ButtonStyle.secondary, row=0)
         shuffle_btn.callback = self.shuffle_callback
         self.add_item(shuffle_btn)
         
-        # Volume Down
-        vol_down_btn = discord.ui.Button(emoji="🔉", style=discord.ButtonStyle.secondary, row=1)
+        vol_down_btn = discord.ui.Button(emoji="🔉", style=discord.ButtonStyle.secondary, row=0)
         vol_down_btn.callback = self.volume_down_callback
         self.add_item(vol_down_btn)
         
-        # Volume Up
-        vol_up_btn = discord.ui.Button(emoji="🔊", style=discord.ButtonStyle.secondary, row=1)
+        volume_btn = discord.ui.Button(label=f"{guild_data_obj.volume}%", style=discord.ButtonStyle.secondary, row=0)
+        volume_btn.callback = self.volume_callback
+        self.add_item(volume_btn)
+        
+        vol_up_btn = discord.ui.Button(emoji="🔊", style=discord.ButtonStyle.secondary, row=0)
         vol_up_btn.callback = self.volume_up_callback
         self.add_item(vol_up_btn)
         
-        # Repeat
+        # Кнопка повтора с правильным эмодзи
         loop_emoji = "🔁"
         if guild_data_obj.queue.loop_mode == "track":
             loop_emoji = "🔂"
-        repeat_btn = discord.ui.Button(emoji=loop_emoji, style=discord.ButtonStyle.secondary, row=1)
+        elif guild_data_obj.queue.loop_mode == "queue":
+            loop_emoji = "🔁"
+        repeat_btn = discord.ui.Button(emoji=loop_emoji, style=discord.ButtonStyle.secondary, row=0)
         repeat_btn.callback = self.repeat_callback
         self.add_item(repeat_btn)
         
-        # Ряд 3: Утилиты
-        # Queue
+        # Второй ряд
+        prev_btn = discord.ui.Button(emoji="⏮️", style=discord.ButtonStyle.secondary, row=1, disabled=True)
+        self.add_item(prev_btn)
+        
+        # Play/Pause кнопка
+        if guild_data_obj.voice_client and guild_data_obj.voice_client.is_playing():
+            play_pause_btn = discord.ui.Button(emoji="⏸️", style=discord.ButtonStyle.secondary, row=1)
+        else:
+            play_pause_btn = discord.ui.Button(emoji="▶️", style=discord.ButtonStyle.secondary, row=1)
+        play_pause_btn.callback = self.play_pause_callback
+        self.add_item(play_pause_btn)
+        
+        stop_btn = discord.ui.Button(emoji="⏹️", style=discord.ButtonStyle.secondary, row=1)
+        stop_btn.callback = self.stop_callback
+        self.add_item(stop_btn)
+        
+        next_btn = discord.ui.Button(emoji="⏭️", style=discord.ButtonStyle.secondary, row=1)
+        next_btn.callback = self.next_callback
+        self.add_item(next_btn)
+        
+        forward_btn = discord.ui.Button(emoji="⏩", style=discord.ButtonStyle.secondary, row=1, disabled=True)
+        self.add_item(forward_btn)
+        
+        # Третий ряд
+        add_btn = discord.ui.Button(emoji="➕", style=discord.ButtonStyle.success, row=2, disabled=True)
+        self.add_item(add_btn)
+        
         queue_btn = discord.ui.Button(emoji="📋", style=discord.ButtonStyle.secondary, row=2)
         queue_btn.callback = self.queue_callback
         self.add_item(queue_btn)
         
-        # Leave
+        lyrics_btn = discord.ui.Button(emoji="🎤", style=discord.ButtonStyle.secondary, row=2, disabled=True)
+        self.add_item(lyrics_btn)
+        
+        save_btn = discord.ui.Button(emoji="💾", style=discord.ButtonStyle.secondary, row=2, disabled=True)
+        self.add_item(save_btn)
+        
         leave_btn = discord.ui.Button(emoji="🚪", style=discord.ButtonStyle.danger, row=2)
         leave_btn.callback = self.leave_callback
         self.add_item(leave_btn)
 
-    async def play_pause_callback(self, interaction: discord.Interaction):
-        guild_data_obj = get_guild_data(self.guild_id)
-        vc = guild_data_obj.voice_client
-        
-        if not vc:
-            await interaction.response.send_message("Бот не подключен к каналу", ephemeral=True)
-            return
-        
-        if vc.is_playing():
-            vc.pause()
-            guild_data_obj.is_paused = True
-            await self.update_player_message()
-            await interaction.response.send_message("Пауза", ephemeral=True)
-        elif vc.is_paused():
-            vc.resume()
-            guild_data_obj.is_paused = False
-            await self.update_player_message()
-            await interaction.response.send_message("Продолжено", ephemeral=True)
-        else:
-            await interaction.response.send_message("Нечего воспроизводить", ephemeral=True)
-
-    async def stop_callback(self, interaction: discord.Interaction):
-        guild_data_obj = get_guild_data(self.guild_id)
-        vc = guild_data_obj.voice_client
-        
-        if not vc:
-            await interaction.response.send_message("Бот не подключен", ephemeral=True)
-            return
-        
-        vc.stop()
-        guild_data_obj.queue.clear()
-        await self.update_player_message(stopped=True)
-        await interaction.response.send_message("Воспроизведение остановлено", ephemeral=True)
-
-    async def next_callback(self, interaction: discord.Interaction):
-        guild_data_obj = get_guild_data(self.guild_id)
-        vc = guild_data_obj.voice_client
-        
-        if not vc or not vc.is_playing():
-            await interaction.response.send_message("Нечего пропускать", ephemeral=True)
-            return
-        
-        vc.stop()
-        await interaction.response.send_message("Трек пропущен", ephemeral=True)
-
     async def shuffle_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         if len(guild_data_obj.queue.tracks) < 2:
-            await interaction.response.send_message("Недостаточно треков для перемешивания", ephemeral=True)
+            await interaction.response.send_message("❌ Недостаточно треков для перемешивания", ephemeral=True)
             return
         
         guild_data_obj.queue.shuffle()
-        await interaction.response.send_message("Очередь перемешана", ephemeral=True)
+        await interaction.response.send_message("🔀 Очередь перемешана", ephemeral=True)
 
     async def volume_down_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         guild_data_obj.volume = max(0, guild_data_obj.volume - 10)
-        await self.update_player_message()
-        await interaction.response.send_message(f"Громкость: {guild_data_obj.volume}%", ephemeral=True)
+        await self.update_player_message(interaction)
+        await interaction.response.send_message(f"🔉 Громкость: {guild_data_obj.volume}%", ephemeral=True)
+
+    async def volume_callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("🔊 Используйте кнопки 🔉/🔊 для изменения громкости", ephemeral=True)
 
     async def volume_up_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         guild_data_obj.volume = min(200, guild_data_obj.volume + 10)
-        await self.update_player_message()
-        await interaction.response.send_message(f"Громкость: {guild_data_obj.volume}%", ephemeral=True)
+        await self.update_player_message(interaction)
+        await interaction.response.send_message(f"🔊 Громкость: {guild_data_obj.volume}%", ephemeral=True)
 
     async def repeat_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         
         if guild_data_obj.queue.loop_mode == "none":
             guild_data_obj.queue.loop_mode = "track"
-            mode_text = "Повтор трека включен"
+            mode_text = "🔂 Повтор трека включен"
         elif guild_data_obj.queue.loop_mode == "track":
             guild_data_obj.queue.loop_mode = "queue"
-            mode_text = "Повтор очереди включен"
+            mode_text = "🔁 Повтор очереди включен"
         else:
             guild_data_obj.queue.loop_mode = "none"
-            mode_text = "Повтор выключен"
+            mode_text = "▶️ Повтор выключен"
         
-        await self.update_player_message()
+        await self.update_player_message(interaction)
         await interaction.response.send_message(mode_text, ephemeral=True)
+
+    async def play_pause_callback(self, interaction: discord.Interaction):
+        guild_data_obj = get_guild_data(self.guild_id)
+        vc = guild_data_obj.voice_client
+        
+        if not vc:
+            await interaction.response.send_message("❌ Бот не подключен к каналу", ephemeral=True)
+            return
+        
+        if vc.is_playing():
+            vc.pause()
+            guild_data_obj.is_paused = True
+            await self.update_player_message(interaction)
+            await interaction.response.send_message("⏸️ Пауза", ephemeral=True)
+        elif vc.is_paused():
+            vc.resume()
+            guild_data_obj.is_paused = False
+            await self.update_player_message(interaction)
+            await interaction.response.send_message("▶️ Продолжено", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Нечего воспроизводить", ephemeral=True)
+
+    async def stop_callback(self, interaction: discord.Interaction):
+        guild_data_obj = get_guild_data(self.guild_id)
+        vc = guild_data_obj.voice_client
+        
+        if not vc:
+            await interaction.response.send_message("❌ Бот не подключен", ephemeral=True)
+            return
+        
+        vc.stop()
+        guild_data_obj.queue.clear()
+        await self.update_player_message(interaction, stopped=True)
+        await interaction.response.send_message("⏹️ Воспроизведение остановлено", ephemeral=True)
+
+    async def next_callback(self, interaction: discord.Interaction):
+        guild_data_obj = get_guild_data(self.guild_id)
+        vc = guild_data_obj.voice_client
+        
+        if not vc or not vc.is_playing():
+            await interaction.response.send_message("❌ Нечего пропускать", ephemeral=True)
+            return
+        
+        vc.stop()  # Вызовет play_next
+        await interaction.response.send_message("⏭️ Трек пропущен", ephemeral=True)
 
     async def queue_callback(self, interaction: discord.Interaction):
         guild_data_obj = get_guild_data(self.guild_id)
         
         if guild_data_obj.queue.is_empty:
-            await interaction.response.send_message("Очередь пуста", ephemeral=True)
+            await interaction.response.send_message("📭 Очередь пуста", ephemeral=True)
             return
         
-        tracks = guild_data_obj.queue.tracks[:10]
+        tracks = guild_data_obj.queue.tracks[:10]  # Показываем первые 10
         queue_text = ""
         
         for i, track in enumerate(tracks, 1):
             queue_text += f"`{i}.` **{track.title[:40]}{'...' if len(track.title) > 40 else ''}**\n"
         
         embed = discord.Embed(
-            title="Очередь треков",
+            title="📋 Очередь треков",
             description=queue_text,
             color=0x2F3136
         )
@@ -391,7 +402,7 @@ class MusicPlayerView(discord.ui.View):
         vc = guild_data_obj.voice_client
         
         if not vc:
-            await interaction.response.send_message("Бот не подключен", ephemeral=True)
+            await interaction.response.send_message("❌ Бот не подключен", ephemeral=True)
             return
         
         guild_data_obj.queue.clear()
@@ -399,11 +410,18 @@ class MusicPlayerView(discord.ui.View):
         await vc.disconnect()
         guild_data_obj.voice_client = None
         
-        # Обновляем плеер
-        await self.update_player_message(stopped=True)
-        await interaction.response.send_message("Бот отключен от канала", ephemeral=True)
+        # Обновляем сообщение плеера
+        if guild_data_obj.player_message:
+            embed = create_idle_embed()
+            view = MusicPlayerView(self.guild_id)
+            try:
+                await guild_data_obj.player_message.edit(embed=embed, view=view)
+            except:
+                pass
+        
+        await interaction.response.send_message("🚪 Бот отключен от канала", ephemeral=True)
 
-    async def update_player_message(self, stopped: bool = False):
+    async def update_player_message(self, interaction: discord.Interaction, stopped: bool = False):
         """Обновить сообщение плеера"""
         guild_data_obj = get_guild_data(self.guild_id)
         
@@ -420,8 +438,8 @@ class MusicPlayerView(discord.ui.View):
         
         try:
             await guild_data_obj.player_message.edit(embed=embed, view=self)
-        except Exception as e:
-            logging.error(f"Error updating player message: {e}")
+        except:
+            pass
 
 async def extract_track_info(url_or_query: str, requester: str) -> tuple[List[Track], bool]:
     """Извлечь информацию о треке(ах) асинхронно"""
@@ -444,13 +462,13 @@ async def extract_track_info(url_or_query: str, requester: str) -> tuple[List[Tr
     except yt_dlp.utils.ExtractorError as e:
         error_msg = str(e).lower()
         if "private" in error_msg:
-            raise Exception("Видео недоступно (приватное или удалено)")
+            raise Exception("❌ Видео недоступно (приватное или удалено)")
         elif "region" in error_msg:
-            raise Exception("Видео недоступно в вашем регионе")
+            raise Exception("❌ Видео недоступно в вашем регионе")
         else:
-            raise Exception(f"Ошибка при извлечении: {str(e)}")
+            raise Exception(f"❌ Ошибка при извлечении: {str(e)}")
     except Exception as e:
-        raise Exception(f"Неожиданная ошибка: {str(e)}")
+        raise Exception(f"❌ Неожиданная ошибка: {str(e)}")
     
     tracks = []
     is_playlist = False
@@ -514,8 +532,8 @@ async def play_next(guild_id: int):
             view = MusicPlayerView(guild_id)
             try:
                 await guild_data_obj.player_message.edit(embed=embed, view=view)
-            except Exception as e:
-                logging.error(f"Error updating player message: {e}")
+            except:
+                pass
         return
     
     try:
@@ -537,8 +555,8 @@ async def play_next(guild_id: int):
             view = MusicPlayerView(guild_id)
             try:
                 await guild_data_obj.player_message.edit(embed=embed, view=view)
-            except Exception as e:
-                logging.error(f"Error updating player message: {e}")
+            except:
+                pass
         
     except Exception as e:
         logging.error(f"Error playing track: {e}")
@@ -546,14 +564,14 @@ async def play_next(guild_id: int):
 
 @bot.event
 async def on_ready():
-    print(f"Вошли как {bot.user}")
+    print(f"✅ Вошли как {bot.user}")
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening,
         name="/play"
     ))
     try:
         synced = await tree.sync()
-        print(f"Синхронизированы {len(synced)} команд")
+        print(f"📡 Синхронизированы {len(synced)} команд(ы)")
     except Exception as e:
         print(f"Ошибка sync: {e}")
 
@@ -570,6 +588,7 @@ async def on_voice_state_update(member, before, after):
             if len(human_members) == 0:
                 if vc.is_playing():
                     vc.pause()
+                    print(f"⏸️ Музыка приостановлена в {vc.channel.name}")
                 
                 await asyncio.sleep(60)
                 
@@ -579,11 +598,13 @@ async def on_voice_state_update(member, before, after):
                     guild_data_obj.queue.clear()
                     await vc.disconnect()
                     guild_data_obj.voice_client = None
+                    print(f"⏹️ Отключился из {vc.channel.name}")
             
             elif len(human_members) > 0 and vc.is_paused():
                 vc.resume()
+                print(f"▶️ Музыка возобновлена в {vc.channel.name}")
 
-@tree.command(name="play", description="Воспроизвести музыку")
+@tree.command(name="play", description="🎵 Воспроизвести музыку")
 @app_commands.describe(query="Ссылка на YouTube или поисковый запрос")
 async def play(interaction: discord.Interaction, query: str):
     """Команда воспроизведения музыки"""
@@ -594,23 +615,13 @@ async def play(interaction: discord.Interaction, query: str):
     # Подключаемся к голосовому каналу
     if not guild_data_obj.voice_client:
         if not interaction.user.voice or not interaction.user.voice.channel:
-            embed = discord.Embed(
-                title="Ошибка",
-                description="Сначала зайдите в голосовой канал",
-                color=0xFF0000
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send("❌ Сначала зайдите в голосовой канал!")
             return
         
         try:
             guild_data_obj.voice_client = await interaction.user.voice.channel.connect()
         except Exception as e:
-            embed = discord.Embed(
-                title="Ошибка",
-                description=f"Не удалось подключиться к каналу: {e}",
-                color=0xFF0000
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(f"❌ Не удалось подключиться к каналу: {e}")
             return
     
     try:
@@ -618,12 +629,12 @@ async def play(interaction: discord.Interaction, query: str):
         tracks, is_playlist = await extract_track_info(query, interaction.user.display_name)
         
         if not tracks:
-            embed = discord.Embed(
-                title="Ошибка",
+            error_embed = discord.Embed(
+                title="❌ Ошибка!",
                 description="Ничего не найдено по вашему запросу",
                 color=0xFF0000
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
             return
         
         # Добавляем треки в очередь
@@ -631,12 +642,15 @@ async def play(interaction: discord.Interaction, query: str):
         
         if is_playlist:
             guild_data_obj.queue.add_multiple(tracks)
-            success_text = f"Добавлен плейлист: {len(tracks)} треков"
+            success_text = f"📃 Добавлен плейлист: **{len(tracks)}** треков"
         else:
             guild_data_obj.queue.add(tracks[0])
-            success_text = f"Добавлен трек: {tracks[0].title}"
+            success_text = f"➕ Добавлен трек: **{tracks[0].title}**"
         
-        # Создаем или обновляем плеер СНАЧАЛА
+        # Отправляем уведомление о добавлении
+        await interaction.followup.send(success_text, ephemeral=True)
+        
+        # Создаем или обновляем плеер
         if not guild_data_obj.player_message:
             if guild_data_obj.queue.current:
                 embed = create_player_embed(guild_data_obj.queue.current, guild_data_obj)
@@ -646,30 +660,19 @@ async def play(interaction: discord.Interaction, query: str):
             view = MusicPlayerView(interaction.guild.id)
             guild_data_obj.player_message = await interaction.followup.send(embed=embed, view=view)
         
-        # Затем отправляем уведомление
-        try:
-            await interaction.followup.send(success_text, ephemeral=True)
-        except:
-            # Если не получается отправить followup, просто пропускаем
-            pass
-        
         # Начинаем воспроизведение если нужно
         if was_empty and not guild_data_obj.voice_client.is_playing():
             await play_next(interaction.guild.id)
     
     except Exception as e:
-        embed = discord.Embed(
-            title="Ошибка",
+        error_embed = discord.Embed(
+            title="❌ Ошибка!",
             description=str(e),
             color=0xFF0000
         )
-        try:
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except:
-            # Если interaction истек, отправляем в канал
-            await interaction.channel.send(embed=embed)
+        await interaction.followup.send(embed=error_embed, ephemeral=True)
 
-@tree.command(name="player", description="Показать музыкальный плеер")
+@tree.command(name="player", description="🎵 Показать музыкальный плеер")
 async def player(interaction: discord.Interaction):
     """Показать плеер"""
     guild_data_obj = get_guild_data(interaction.guild.id)
@@ -685,33 +688,32 @@ async def player(interaction: discord.Interaction):
     if guild_data_obj.player_message:
         try:
             await guild_data_obj.player_message.edit(embed=embed, view=view)
-            await interaction.response.send_message("Плеер обновлен", ephemeral=True)
+            await interaction.response.send_message("🎵 Плеер обновлен", ephemeral=True)
         except:
             guild_data_obj.player_message = await interaction.response.send_message(embed=embed, view=view)
     else:
         guild_data_obj.player_message = await interaction.response.send_message(embed=embed, view=view)
 
-@tree.command(name="help", description="Показать справку по командам")
+@tree.command(name="help", description="📖 Показать справку")
 async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="Справка по командам",
-        description="Музыкальный бот для Discord",
+        title="📖 Справка по командам",
+        description="Музыкальный бот с красивым интерфейсом",
         color=0x2F3136
     )
     
     embed.add_field(
-        name="Команды",
+        name="🎵 Основные команды",
         value="""
-/play <запрос> - Добавить музыку
-/player - Показать плеер с кнопками управления
-/help - Показать эту справку
+`/play <запрос>` - Добавить музыку
+`/player` - Показать плеер с кнопками
         """,
         inline=False
     )
     
     embed.add_field(
-        name="Управление",
-        value="Используйте кнопки в плеере для управления воспроизведением",
+        name="🎛️ Управление",
+        value="Используйте кнопки плеера для управления музыкой",
         inline=False
     )
     
