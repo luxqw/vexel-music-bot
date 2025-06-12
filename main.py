@@ -5,8 +5,6 @@ import asyncio
 from discord.ext import commands
 from discord import app_commands
 import yt_dlp
-from utils.cookie_manager import CookieManager
-from utils.youtube_auth import YouTubeAuthenticator
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -19,27 +17,36 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 tree = bot.tree
 queues = {}
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot.log"),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(filename="bot.log", level=logging.INFO)
 
-# Инициализация аутентификации
-youtube_auth = YouTubeAuthenticator()
+# Добавляем поддержку cookies
+def get_ytdl_opts():
+    """Получить ytdl_opts с поддержкой cookies"""
+    ytdl_opts = {
+        "format": "bestaudio",
+        "noplaylist": False,
+    }
+    
+    # Проверяем файл cookies
+    cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
+    if cookies_file and os.path.exists(cookies_file):
+        ytdl_opts["cookiefile"] = cookies_file
+        print(f"✅ Используем YouTube cookies: {cookies_file}")
+    
+    # Проверяем браузерные cookies
+    browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
+    if browser_cookies and not cookies_file:
+        try:
+            browser, profile = browser_cookies.split(",", 1)
+            ytdl_opts["cookiesfrombrowser"] = (browser.strip(), profile.strip())
+            print(f"✅ Используем cookies браузера: {browser} ({profile})")
+        except ValueError:
+            print(f"❌ Неверный формат YOUTUBE_BROWSER_COOKIES: {browser_cookies}")
+    
+    return ytdl_opts
 
-# Базовые опции для yt_dlp
-base_ytdl_opts = {
-    "format": "bestaudio",
-    "noplaylist": False,
-}
-
-# Получаем опции с поддержкой аутентификации
-ytdl_opts = youtube_auth.get_authenticated_ytdl_opts(base_ytdl_opts)
+# Инициализируем ytdl с cookies
+ytdl_opts = get_ytdl_opts()
 ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 
 def log_command(user, command):
@@ -55,27 +62,37 @@ def create_source(url):
         options='-vn'
     )
 
+def is_age_restricted_error(error):
+    """Проверить, является ли ошибка связанной с age-restriction"""
+    error_str = str(error).lower()
+    age_restricted_keywords = [
+        "age-restricted",
+        "sign in to confirm your age",
+        "video is age restricted", 
+        "sign in to confirm",
+        "login required"
+    ]
+    return any(keyword in error_str for keyword in age_restricted_keywords)
+
 @bot.event
 async def on_ready():
     print(f"✅ Вошли как {bot.user}")
     
-    # Тестируем аутентификацию при запуске
-    print("🔐 Проверяем настройки аутентификации...")
-    auth_test = youtube_auth.test_authentication()
+    # Проверяем настройки cookies при запуске
+    cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
+    browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
     
-    if auth_test["cookies_used"]:
-        if auth_test["success"]:
-            print("✅ Аутентификация YouTube настроена и работает")
-        else:
-            print(f"⚠️ Проблема с аутентификацией: {auth_test['message']}")
+    if cookies_file and os.path.exists(cookies_file):
+        print("🔐 YouTube cookies настроены (файл)")
+    elif browser_cookies:
+        print("🔐 YouTube cookies настроены (браузер)")
     else:
-        print("ℹ️ Аутентификация YouTube не настроена (age-restricted контент недоступен)")
+        print("ℹ️ YouTube cookies не настроены (age-restricted контент недоступен)")
     
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening,
         name="/help"
     ))
-    
     try:
         synced = await tree.sync()
         print(f"📡 Синхронизированы {len(synced)} команд(ы)")
@@ -122,14 +139,23 @@ async def play(interaction: discord.Interaction, query: str):
     try:
         info = ytdl.extract_info(search_query, download=False)
     except Exception as e:
-        # Проверяем, является ли это ошибкой age-restriction
-        if youtube_auth.is_age_restricted_error(e):
-            await interaction.followup.send(
-                "🔞 **Контент с возрастными ограничениями**\n"
-                "Этот контент требует аутентификации YouTube.\n"
-                "Для воспроизведения 18+ контента администратор должен настроить cookies.\n"
-                f"Ошибка: {str(e)[:200]}..."
-            )
+        # Улучшенная обработка ошибок age-restriction
+        if is_age_restricted_error(e):
+            cookies_configured = os.getenv("YOUTUBE_COOKIES_FILE") or os.getenv("YOUTUBE_BROWSER_COOKIES")
+            if cookies_configured:
+                await interaction.followup.send(
+                    "🔞 **Контент с возрастными ограничениями**\n"
+                    "❌ Не удалось получить доступ к контенту, несмотря на настроенные cookies.\n"
+                    "🔄 Возможно, cookies устарели или недействительны.\n"
+                    "💡 Попробуйте обновить cookies или найти другую версию контента."
+                )
+            else:
+                await interaction.followup.send(
+                    "🔞 **Контент с возрастными ограничениями**\n"
+                    "❌ Этот контент требует аутентификации YouTube.\n"
+                    "🔐 Для воспроизведения 18+ контента администратор должен настроить cookies.\n"
+                    "💡 Попробуйте найти другую версию: `cover`, `lyrics`, `instrumental`"
+                )
         else:
             await interaction.followup.send(f"❌ Ошибка при обработке запроса: {str(e)}")
         return
@@ -156,54 +182,86 @@ async def play(interaction: discord.Interaction, query: str):
     if not vc.is_playing():
         await play_next(vc, interaction.guild.id)
 
-# Добавляем команду для тестирования аутентификации (только для администраторов)
-@tree.command(name="test_auth", description="Протестировать аутентификацию YouTube (только для администраторов)")
-async def test_auth(interaction: discord.Interaction):
+# Добавляем команду для тестирования cookies (только для администраторов)
+@tree.command(name="test_cookies", description="Протестировать YouTube cookies (только для администраторов)")
+async def test_cookies(interaction: discord.Interaction):
     # Проверяем права администратора
     if not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("❌ Эта команда доступна только администраторам.", ephemeral=True)
         return
     
-    log_command(interaction.user.name, "/test_auth")
-    await interaction.response.send_message("🔐 Тестирую аутентификацию YouTube...")
+    log_command(interaction.user.name, "/test_cookies")
+    await interaction.response.send_message("🔐 Тестирую YouTube cookies...")
+    
+    # Тестируем с известным age-restricted видео
+    test_url = "https://www.youtube.com/watch?v=UazDDkQ8Ra8"  # age-restricted
     
     try:
-        auth_result = youtube_auth.test_authentication()
+        test_info = ytdl.extract_info(test_url, download=False)
         
         embed = discord.Embed(
-            title="🔐 Результат теста аутентификации",
-            color=0x00ff00 if auth_result["success"] else 0xff0000
+            title="🔐 Результат теста cookies",
+            color=0x00ff00
         )
         
         embed.add_field(
-            name="Статус",
-            value="✅ Успешно" if auth_result["success"] else "❌ Ошибка",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Cookies используются",
-            value="✅ Да" if auth_result["cookies_used"] else "❌ Нет",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Сообщение",
-            value=auth_result["message"],
+            name="✅ Тест успешен",
+            value="Age-restricted контент доступен!",
             inline=False
         )
         
-        if auth_result["video_info"]:
-            embed.add_field(
-                name="Тестовое видео",
-                value=f"**{auth_result['video_info']['title']}**\nДлительность: {auth_result['video_info']['duration']} сек",
-                inline=False
-            )
+        embed.add_field(
+            name="🎵 Тестовое видео",
+            value=f"**{test_info.get('title', 'Неизвестно')}**",
+            inline=False
+        )
+        
+        cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
+        browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
+        
+        if cookies_file:
+            embed.add_field(name="🍪 Используемые cookies", value=f"Файл: `{cookies_file}`", inline=False)
+        elif browser_cookies:
+            embed.add_field(name="🍪 Используемые cookies", value=f"Браузер: `{browser_cookies}`", inline=False)
         
         await interaction.followup.send(embed=embed)
         
     except Exception as e:
-        await interaction.followup.send(f"❌ Ошибка при тестировании: {str(e)}")
+        embed = discord.Embed(
+            title="🔐 Результат теста cookies", 
+            color=0xff0000
+        )
+        
+        if is_age_restricted_error(e):
+            embed.add_field(
+                name="❌ Тест неудачен",
+                value="Age-restricted контент недоступен",
+                inline=False
+            )
+            
+            cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
+            browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
+            
+            if cookies_file or browser_cookies:
+                embed.add_field(
+                    name="🔍 Возможные причины",
+                    value="• Cookies устарели\n• Неверный формат cookies\n• Cookies от аккаунта без возрастной верификации",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="🔍 Причина",
+                    value="Cookies не настроены",
+                    inline=False
+                )
+        else:
+            embed.add_field(
+                name="❌ Ошибка теста",
+                value=f"```{str(e)[:200]}...```",
+                inline=False
+            )
+        
+        await interaction.followup.send(embed=embed)
 
 async def play_next(vc, guild_id):
     queue = get_queue(guild_id)
@@ -215,7 +273,6 @@ async def play_next(vc, guild_id):
 
     vc.play(source, after=lambda e: bot.loop.create_task(play_next(vc, guild_id)))
 
-# Остальные команды остаются без изменений...
 @tree.command(name="pause", description="Приостановить воспроизведение")
 async def pause(interaction: discord.Interaction):
     log_command(interaction.user.name, "/pause")
@@ -293,7 +350,7 @@ async def help_cmd(interaction: discord.Interaction):
     
     embed.add_field(
         name="🔧 Администрирование",
-        value="`/test_auth` — Протестировать аутентификацию YouTube",
+        value="`/test_cookies` — Протестировать YouTube cookies",
         inline=False
     )
     
