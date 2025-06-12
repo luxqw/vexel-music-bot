@@ -131,9 +131,10 @@ class MusicPlayerView(discord.ui.View):
         
         await interaction.response.send_message("⏹️ Стоп", ephemeral=True)
         
-        # Удаляем старый плеер и создаем новый
+        # ИСПРАВЛЕНО: Только удаляем плеер, НЕ создаем новый
         await delete_old_player(interaction.guild.id)
-        await create_new_player(interaction.guild.id, interaction.channel)
+        if interaction.guild.id in player_channels:
+            del player_channels[interaction.guild.id]
     
     @discord.ui.button(emoji="📃", style=discord.ButtonStyle.secondary, custom_id="queue")
     async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -347,16 +348,14 @@ async def on_voice_state_update(member, before, after):
         if vc.is_playing():
             vc.pause() 
             print("⏸️ Музыка приостановлена, так как бот остался один в канале.")
-            # Создаем новый плеер с обновленным статусом
-            channel = player_channels.get(member.guild.id)
-            if channel:
-                await create_new_player(member.guild.id, channel)
+            # ИСПРАВЛЕНО: Обновляем существующий плеер, а не создаем новый
+            await update_player_message(member.guild.id)
 
         await asyncio.sleep(60)  
         if len(vc.channel.members) == 1:  
             await vc.disconnect()
             print(f"⏹️ Отключение из канала {vc.channel.name} на сервере {member.guild.name}")
-            # Удаляем плеер при отключении
+            # ИСПРАВЛЕНО: Полностью удаляем плеер при отключении
             await delete_old_player(member.guild.id)
             if member.guild.id in player_channels:
                 del player_channels[member.guild.id]
@@ -482,7 +481,7 @@ async def stop(interaction: discord.Interaction):
         current_tracks[interaction.guild.id] = None
         await interaction.response.send_message("⏹️ Остановлено и отключено.", ephemeral=True)
         
-        # Удаляем плеер полностью
+        # ИСПРАВЛЕНО: Полностью удаляем плеер при stop команде
         await delete_old_player(interaction.guild.id)
         if interaction.guild.id in player_channels:
             del player_channels[interaction.guild.id]
