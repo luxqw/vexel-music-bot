@@ -11,6 +11,7 @@ services:
     volumes:
       - ./bot:/app/bot
       - ./logs:/app/logs
+      - ./cookies:/app/cookies
     working_dir: /app
     restart: unless-stopped
     command: ["python3", "main.py"]
