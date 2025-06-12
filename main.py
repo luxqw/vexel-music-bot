@@ -17,6 +17,9 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 tree = bot.tree
 queues = {}
 
+# Словарь для хранения сообщений плеера по гильдиям
+player_messages = {}
+
 logging.basicConfig(filename="bot.log", level=logging.INFO)
 
 # Добавляем поддержку cookies
@@ -74,6 +77,59 @@ def is_age_restricted_error(error):
     ]
     return any(keyword in error_str for keyword in age_restricted_keywords)
 
+async def update_player_message(guild_id, current_track=None):
+    """Обновить сообщение плеера"""
+    if guild_id not in player_messages:
+        return
+    
+    try:
+        message = player_messages[guild_id]
+        queue = get_queue(guild_id)
+        vc = discord.utils.get(bot.voice_clients, guild=message.guild)
+        
+        embed = discord.Embed(color=0x0099ff)
+        
+        if current_track:
+            embed.title = "🎵 Сейчас играет"
+            embed.description = f"**{current_track['title']}**\nДобавлено пользователем: {current_track['requester']}"
+            
+            if vc:
+                if vc.is_playing():
+                    embed.color = 0x00ff00  # Зеленый - играет
+                    embed.set_footer(text="▶️ Воспроизводится")
+                elif vc.is_paused():
+                    embed.color = 0xffaa00  # Оранжевый - пауза
+                    embed.set_footer(text="⏸️ На паузе")
+        else:
+            embed.title = "🎵 Плеер"
+            embed.description = "Ничего не играет"
+            embed.color = 0x808080  # Серый
+            embed.set_footer(text="⏹️ Остановлено")
+        
+        # Показываем очередь (первые 5 треков)
+        if queue:
+            queue_text = ""
+            for i, track in enumerate(queue[:5]):
+                queue_text += f"{i+1}. {track['title'][:40]}{'...' if len(track['title']) > 40 else ''}\n"
+            
+            if len(queue) > 5:
+                queue_text += f"... и еще {len(queue) - 5} треков"
+            
+            embed.add_field(
+                name=f"📃 Очередь ({len(queue)} треков)",
+                value=queue_text if queue_text else "Пусто",
+                inline=False
+            )
+        
+        await message.edit(embed=embed)
+        
+    except discord.NotFound:
+        # Сообщение было удалено, убираем из словаря
+        if guild_id in player_messages:
+            del player_messages[guild_id]
+    except Exception as e:
+        print(f"Ошибка обновления плеера: {e}")
+
 @bot.event
 async def on_ready():
     print(f"✅ Вошли как {bot.user}")
@@ -87,7 +143,7 @@ async def on_ready():
     elif browser_cookies:
         print("🔐 YouTube cookies настроены (браузер)")
     else:
-        print("ℹ️ YouTube cookies не настроены (age-restricted контент недоступен)")
+        print("ℹ️ YouTube cookies не настроены")
     
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening,
@@ -110,11 +166,13 @@ async def on_voice_state_update(member, before, after):
         if vc.is_playing():
             vc.pause() 
             print("⏸️ Музыка приостановлена, так как бот остался один в канале.")
+            await update_player_message(member.guild.id)
 
         await asyncio.sleep(60)  
         if len(vc.channel.members) == 1:  
             await vc.disconnect()
             print(f"⏹️ Отключение из канала {vc.channel.name} на сервере {member.guild.name}")
+            await update_player_message(member.guild.id)
 
 @tree.command(name="play", description="Воспроизвести музыку или плейлист с YouTube")
 @app_commands.describe(query="Ссылка или запрос")
@@ -141,21 +199,11 @@ async def play(interaction: discord.Interaction, query: str):
     except Exception as e:
         # Улучшенная обработка ошибок age-restriction
         if is_age_restricted_error(e):
-            cookies_configured = os.getenv("YOUTUBE_COOKIES_FILE") or os.getenv("YOUTUBE_BROWSER_COOKIES")
-            if cookies_configured:
-                await interaction.followup.send(
-                    "🔞 **Контент с возрастными ограничениями**\n"
-                    "❌ Не удалось получить доступ к контенту, несмотря на настроенные cookies.\n"
-                    "🔄 Возможно, cookies устарели или недействительны.\n"
-                    "💡 Попробуйте обновить cookies или найти другую версию контента."
-                )
-            else:
-                await interaction.followup.send(
-                    "🔞 **Контент с возрастными ограничениями**\n"
-                    "❌ Этот контент требует аутентификации YouTube.\n"
-                    "🔐 Для воспроизведения 18+ контента администратор должен настроить cookies.\n"
-                    "💡 Попробуйте найти другую версию: `cover`, `lyrics`, `instrumental`"
-                )
+            await interaction.followup.send(
+                "🔞 **Контент с возрастными ограничениями**\n"
+                "❌ Этот контент недоступен.\n"
+                "💡 Попробуйте найти другую версию: `cover`, `lyrics`, `instrumental`"
+            )
         else:
             await interaction.followup.send(f"❌ Ошибка при обработке запроса: {str(e)}")
         return
@@ -179,99 +227,37 @@ async def play(interaction: discord.Interaction, query: str):
         queue.append(track)
         await interaction.followup.send(f"🎶 Добавлен трек: {track['title']}")
 
+    # Создаем или обновляем плеер, если его нет
+    if interaction.guild.id not in player_messages:
+        embed = discord.Embed(
+            title="🎵 Плеер",
+            description="Инициализация...",
+            color=0x0099ff
+        )
+        player_msg = await interaction.followup.send(embed=embed)
+        player_messages[interaction.guild.id] = player_msg
+
     if not vc.is_playing():
         await play_next(vc, interaction.guild.id)
-
-# Добавляем команду для тестирования cookies (только для администраторов)
-@tree.command(name="test_cookies", description="Протестировать YouTube cookies (только для администраторов)")
-async def test_cookies(interaction: discord.Interaction):
-    # Проверяем права администратора
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ Эта команда доступна только администраторам.", ephemeral=True)
-        return
-    
-    log_command(interaction.user.name, "/test_cookies")
-    await interaction.response.send_message("🔐 Тестирую YouTube cookies...")
-    
-    # Тестируем с известным age-restricted видео
-    test_url = "https://www.youtube.com/watch?v=UazDDkQ8Ra8"  # age-restricted
-    
-    try:
-        test_info = ytdl.extract_info(test_url, download=False)
-        
-        embed = discord.Embed(
-            title="🔐 Результат теста cookies",
-            color=0x00ff00
-        )
-        
-        embed.add_field(
-            name="✅ Тест успешен",
-            value="Age-restricted контент доступен!",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🎵 Тестовое видео",
-            value=f"**{test_info.get('title', 'Неизвестно')}**",
-            inline=False
-        )
-        
-        cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
-        browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
-        
-        if cookies_file:
-            embed.add_field(name="🍪 Используемые cookies", value=f"Файл: `{cookies_file}`", inline=False)
-        elif browser_cookies:
-            embed.add_field(name="🍪 Используемые cookies", value=f"Браузер: `{browser_cookies}`", inline=False)
-        
-        await interaction.followup.send(embed=embed)
-        
-    except Exception as e:
-        embed = discord.Embed(
-            title="🔐 Результат теста cookies", 
-            color=0xff0000
-        )
-        
-        if is_age_restricted_error(e):
-            embed.add_field(
-                name="❌ Тест неудачен",
-                value="Age-restricted контент недоступен",
-                inline=False
-            )
-            
-            cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
-            browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
-            
-            if cookies_file or browser_cookies:
-                embed.add_field(
-                    name="🔍 Возможные причины",
-                    value="• Cookies устарели\n• Неверный формат cookies\n• Cookies от аккаунта без возрастной верификации",
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="🔍 Причина",
-                    value="Cookies не настроены",
-                    inline=False
-                )
-        else:
-            embed.add_field(
-                name="❌ Ошибка теста",
-                value=f"```{str(e)[:200]}...```",
-                inline=False
-            )
-        
-        await interaction.followup.send(embed=embed)
 
 async def play_next(vc, guild_id):
     queue = get_queue(guild_id)
     if not queue:
+        await update_player_message(guild_id)
         return
 
     next_track = queue.pop(0)
     source = create_source(next_track["url"])
 
-    vc.play(source, after=lambda e: bot.loop.create_task(play_next(vc, guild_id)))
+    def after_play(error):
+        if error:
+            print(f"Ошибка воспроизведения: {error}")
+        bot.loop.create_task(play_next(vc, guild_id))
+
+    vc.play(source, after=after_play)
+    
+    # Обновляем плеер с текущим треком
+    await update_player_message(guild_id, next_track)
 
 @tree.command(name="pause", description="Приостановить воспроизведение")
 async def pause(interaction: discord.Interaction):
@@ -280,6 +266,7 @@ async def pause(interaction: discord.Interaction):
     if vc and vc.is_playing():
         vc.pause()
         await interaction.response.send_message("⏸️ Воспроизведение приостановлено.")
+        await update_player_message(interaction.guild.id)
     else:
         await interaction.response.send_message("❌ Сейчас ничего не играет.")
 
@@ -290,6 +277,7 @@ async def resume(interaction: discord.Interaction):
     if vc and vc.is_paused():
         vc.resume()
         await interaction.response.send_message("▶️ Воспроизведение продолжено.")
+        await update_player_message(interaction.guild.id)
     else:
         await interaction.response.send_message("❌ Музыка не приостановлена.")
 
@@ -302,6 +290,7 @@ async def stop(interaction: discord.Interaction):
         await vc.disconnect()
         queues[interaction.guild.id] = []
         await interaction.response.send_message("⏹️ Остановлено и отключено.")
+        await update_player_message(interaction.guild.id)
     else:
         await interaction.response.send_message("❌ Бот не подключен к голосовому каналу.")
 
@@ -328,38 +317,14 @@ async def queue_cmd(interaction: discord.Interaction):
 @tree.command(name="help", description="Показать справку по командам")
 async def help_cmd(interaction: discord.Interaction):
     log_command(interaction.user.name, "/help")
-    
-    embed = discord.Embed(
-        title="📖 Команды бота",
-        description="Доступные команды для управления музыкой",
-        color=0x0099ff
-    )
-    
-    embed.add_field(
-        name="🎵 Основные команды",
-        value=(
-            "`/play <url или запрос>` — Воспроизведение трека\n"
-            "`/pause` — Приостановить текущую песню\n"
-            "`/resume` — Продолжить воспроизведение\n"
-            "`/stop` — Остановить воспроизведение и отключиться\n"
-            "`/skip` — Пропустить текущую песню\n"
-            "`/queue` — Показать текущую очередь"
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="🔧 Администрирование",
-        value="`/test_cookies` — Протестировать YouTube cookies",
-        inline=False
-    )
-    
-    embed.add_field(
-        name="🔞 Age-restricted контент",
-        value="Для воспроизведения контента 18+ требуется настройка YouTube cookies администратором.",
-        inline=False
-    )
-    
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message("""📖 **Команды бота**
+
+- `/play <url или запрос>` — Воспроизведение трека
+- `/pause` — Приостановить текущую песню
+- `/resume` — Продолжить воспроизведение
+- `/stop` — Остановить воспроизведение и отключиться
+- `/skip` — Пропустить текущую песню
+- `/queue` — Показать текущую очередь
+""")
 
 bot.run(TOKEN)
