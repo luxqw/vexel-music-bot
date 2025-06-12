@@ -83,7 +83,7 @@ class MusicPlayerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
     
-    @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.primary, custom_id="pause_resume")
+    @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary, custom_id="pause_resume")
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         if not vc:
@@ -103,12 +103,6 @@ class MusicPlayerView(discord.ui.View):
             return
         
         await update_player_message(interaction.guild.id)
-        # Обновляем кнопки
-        if interaction.guild.id in player_messages:
-            try:
-                await player_messages[interaction.guild.id].edit(view=self)
-            except:
-                pass
     
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="skip")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -135,7 +129,7 @@ class MusicPlayerView(discord.ui.View):
         await interaction.response.send_message("⏹️ Остановлено и отключено.", ephemeral=True)
         await update_player_message(interaction.guild.id)
     
-    @discord.ui.button(emoji="📃", style=discord.ButtonStyle.success, custom_id="queue")
+    @discord.ui.button(emoji="📃", style=discord.ButtonStyle.secondary, custom_id="queue")
     async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = get_queue(interaction.guild.id)
         
@@ -146,13 +140,13 @@ class MusicPlayerView(discord.ui.View):
         # Создаем красивый список очереди
         embed = discord.Embed(
             title="📃 Очередь треков",
-            color=0x0099ff
+            color=0x2f3136
         )
         
         # Показываем первые 10 треков
         queue_text = ""
         for i, track in enumerate(queue[:10]):
-            queue_text += f"`{i+1}.` **{track['title'][:50]}{'...' if len(track['title']) > 50 else ''}**\n└ *Добавлено: {track['requester']}*\n\n"
+            queue_text += f"`{i+1}.` **{track['title'][:45]}{'...' if len(track['title']) > 45 else ''}**\n*Добавлено: {track['requester']}*\n\n"
         
         if len(queue) > 10:
             queue_text += f"*... и еще {len(queue) - 10} треков*"
@@ -161,30 +155,20 @@ class MusicPlayerView(discord.ui.View):
         embed.set_footer(text=f"Всего треков в очереди: {len(queue)}")
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.secondary, custom_id="shuffle")
-    async def shuffle_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
-        import random
-        queue = get_queue(interaction.guild.id)
-        
-        if len(queue) < 2:
-            await interaction.response.send_message("❌ В очереди недостаточно треков для перемешивания.", ephemeral=True)
-            return
-        
-        random.shuffle(queue)
-        await interaction.response.send_message(f"🔀 Очередь перемешана! ({len(queue)} треков)", ephemeral=True)
-        await update_player_message(interaction.guild.id)
 
 def create_player_embed(guild_id):
     """Создать embed для плеера"""
     current_track = current_tracks.get(guild_id)
     queue = get_queue(guild_id)
     
-    embed = discord.Embed()
+    # Нейтральная цветовая схема
+    embed = discord.Embed(color=0x2f3136)  # Discord dark theme color
     
     if current_track:
         embed.title = "🎵 Сейчас играет"
         embed.description = f"**{current_track['title']}**"
+        
+        # Создаем поля в одну строку для компактности
         embed.add_field(
             name="👤 Заказал", 
             value=current_track['requester'], 
@@ -195,11 +179,6 @@ def create_player_embed(guild_id):
             value=f"{len(queue)} треков", 
             inline=True
         )
-        embed.add_field(
-            name="🔗 Ссылка", 
-            value=f"[YouTube]({current_track.get('webpage_url', 'N/A')})", 
-            inline=True
-        )
         
         # Определяем статус
         guild = bot.get_guild(guild_id)
@@ -207,35 +186,72 @@ def create_player_embed(guild_id):
         
         if vc:
             if vc.is_playing():
-                embed.color = 0x00ff00  # Зеленый
-                embed.set_footer(text="▶️ Воспроизводится", icon_url="https://cdn.discordapp.com/emojis/899330171486187530.gif")
+                embed.add_field(name="🔊 Статус", value="▶️ Играет", inline=True)
             elif vc.is_paused():
-                embed.color = 0xffaa00  # Оранжевый
-                embed.set_footer(text="⏸️ На паузе")
+                embed.add_field(name="🔊 Статус", value="⏸️ Пауза", inline=True)
             else:
-                embed.color = 0xff0000  # Красный
-                embed.set_footer(text="⏹️ Остановлено")
+                embed.add_field(name="🔊 Статус", value="⏹️ Остановлено", inline=True)
         else:
-            embed.color = 0x808080  # Серый
-            embed.set_footer(text="🔌 Не подключен")
+            embed.add_field(name="🔊 Статус", value="🔌 Не подключен", inline=True)
+            
+        # Добавляем миниатюру, если есть
+        if 'thumbnail' in current_track and current_track['thumbnail']:
+            embed.set_thumbnail(url=current_track['thumbnail'])
     else:
         embed.title = "🎵 Музыкальный плеер"
-        embed.description = "*Ничего не играет*"
-        embed.color = 0x808080
-        embed.set_footer(text="⏹️ Готов к воспроизведению")
+        embed.description = "*Готов к воспроизведению*"
         
         if queue:
             embed.add_field(
-                name="📃 В очереди", 
+                name="📃 В очереди ожидает", 
                 value=f"{len(queue)} треков", 
                 inline=True
             )
-    
-    # Добавляем миниатюру (если есть)
-    if current_track and 'thumbnail' in current_track:
-        embed.set_thumbnail(url=current_track['thumbnail'])
+        
+        embed.add_field(
+            name="🔊 Статус", 
+            value="⏹️ Остановлен", 
+            inline=True
+        )
     
     return embed
+
+async def ensure_player_visible(guild_id, channel=None):
+    """Убедиться, что плеер видимый и доступный"""
+    if guild_id in player_messages:
+        try:
+            # Проверяем, существует ли еще сообщение
+            message = player_messages[guild_id]
+            
+            # Получаем последние сообщения в канале
+            if channel:
+                recent_messages = [msg async for msg in channel.history(limit=10)]
+                
+                # Если плеер не в последних 10 сообщениях, создаем новый
+                if message not in recent_messages:
+                    raise discord.NotFound("Player message is too old")
+                    
+            # Пробуем обновить существующий плеер
+            await update_player_message(guild_id)
+            return True
+            
+        except (discord.NotFound, discord.HTTPException):
+            # Сообщение удалено или недоступно, удаляем из словаря
+            del player_messages[guild_id]
+    
+    # Создаем новый плеер, если нужно
+    if channel and guild_id not in player_messages:
+        embed = create_player_embed(guild_id)
+        view = MusicPlayerView()
+        
+        try:
+            player_msg = await channel.send(embed=embed, view=view)
+            player_messages[guild_id] = player_msg
+            return True
+        except discord.HTTPException:
+            return False
+    
+    return False
 
 async def update_player_message(guild_id):
     """Обновить сообщение плеера"""
@@ -369,12 +385,8 @@ async def play(interaction: discord.Interaction, query: str):
         queue.append(track)
         await interaction.edit_original_response(content=f"🎶 **Добавлен трек:** {track['title']}")
 
-    # Создаем плеер, если его нет
-    if interaction.guild.id not in player_messages:
-        embed = create_player_embed(interaction.guild.id)
-        view = MusicPlayerView()
-        player_msg = await interaction.followup.send(embed=embed, view=view)
-        player_messages[interaction.guild.id] = player_msg
+    # Убеждаемся, что плеер видимый
+    await ensure_player_visible(interaction.guild.id, interaction.channel)
 
     if not vc.is_playing():
         await play_next(vc, interaction.guild.id)
@@ -455,12 +467,12 @@ async def queue_cmd(interaction: discord.Interaction):
     
     embed = discord.Embed(
         title="📃 Очередь треков",
-        color=0x0099ff
+        color=0x2f3136
     )
     
     queue_text = ""
     for i, track in enumerate(queue[:10]):
-        queue_text += f"`{i+1}.` **{track['title'][:50]}{'...' if len(track['title']) > 50 else ''}**\n└ *Добавлено: {track['requester']}*\n\n"
+        queue_text += f"`{i+1}.` **{track['title'][:45]}{'...' if len(track['title']) > 45 else ''}**\n*Добавлено: {track['requester']}*\n\n"
     
     if len(queue) > 10:
         queue_text += f"*... и еще {len(queue) - 10} треков*"
@@ -477,7 +489,7 @@ async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(
         title="📖 Команды бота",
         description="Управляйте музыкой с помощью команд или кнопок плеера",
-        color=0x0099ff
+        color=0x2f3136
     )
     
     embed.add_field(
@@ -499,8 +511,7 @@ async def help_cmd(interaction: discord.Interaction):
             "⏸️/▶️ — Пауза/Воспроизведение\n"
             "⏭️ — Пропустить трек\n"
             "⏹️ — Остановить\n"
-            "📃 — Показать очередь\n"
-            "🔀 — Перемешать очередь"
+            "📃 — Показать очередь"
         ),
         inline=False
     )
