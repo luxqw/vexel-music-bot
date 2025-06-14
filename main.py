@@ -468,7 +468,7 @@ async def play(interaction: discord.Interaction, query: str):
             if total_entries > MAX_PLAYLIST_SIZE:
                 await interaction.edit_original_response(
                     content=f"📃 **Добавлено {added_count} из {total_entries} треков**\n"
-                           f"💡 *Лимит плейлиста: {MAX_PLAYLIST_SIZE} треков*"
+                           f"💡 Лимит плейлиста: {MAX_PLAYLIST_SIZE} треков"
                 )
                 logger.info(f"✅ Плейлист обрезан: {added_count}/{total_entries} треков")
             else:
