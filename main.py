@@ -2,6 +2,7 @@ import os
 import logging
 import discord
 import asyncio
+import sys
 from discord.ext import commands
 from discord import app_commands
 import yt_dlp
@@ -25,8 +26,17 @@ current_tracks = {}
 # Словарь для хранения каналов плеера
 player_channels = {}
 
-# ✅ ИСПРАВЛЕНИЕ: Возвращаем простое логирование + print для видимости
-logging.basicConfig(filename="bot.log", level=logging.INFO)
+# ✅ Правильное логирование с выводом в консоль
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger("VexelBot")
 
 # Добавляем поддержку cookies
 def get_ytdl_opts():
@@ -44,7 +54,7 @@ def get_ytdl_opts():
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
     if cookies_file and os.path.exists(cookies_file):
         ytdl_opts["cookiefile"] = cookies_file
-        print(f"✅ Используем YouTube cookies: {cookies_file}")
+        logger.info(f"✅ Используем YouTube cookies: {cookies_file}")
     
     # Проверяем браузерные cookies
     browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
@@ -52,9 +62,9 @@ def get_ytdl_opts():
         try:
             browser, profile = browser_cookies.split(",", 1)
             ytdl_opts["cookiesfrombrowser"] = (browser.strip(), profile.strip())
-            print(f"✅ Используем cookies браузера: {browser} ({profile})")
+            logger.info(f"✅ Используем cookies браузера: {browser} ({profile})")
         except ValueError:
-            print(f"❌ Неверный формат YOUTUBE_BROWSER_COOKIES: {browser_cookies}")
+            logger.error(f"❌ Неверный формат YOUTUBE_BROWSER_COOKIES: {browser_cookies}")
     
     return ytdl_opts
 
@@ -141,10 +151,9 @@ class MusicPlayerView(discord.ui.View):
         
         await interaction.followup.send("⏹️ Стоп", ephemeral=True)
         
-        # Удаляем плеер полностью
+        # ✅ безопасное удаление плеера
         await delete_old_player(interaction.guild.id)
-        if interaction.guild.id in player_channels:
-            del player_channels[interaction.guild.id]
+        player_channels.pop(interaction.guild.id, None)
     
     @discord.ui.button(emoji="📃", style=discord.ButtonStyle.secondary, custom_id="queue")
     async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -228,13 +237,14 @@ def create_player_embed(guild_id):
     return embed
 
 async def delete_old_player(guild_id):
-    """Удалить старый плеер"""
+    """✅ Безопасное удаление старого плеера"""
     if guild_id in player_messages:
         try:
             await player_messages[guild_id].delete()
         except:
             pass
-        del player_messages[guild_id]
+        # ✅ Используем pop() вместо del для безопасности
+        player_messages.pop(guild_id, None)
 
 async def update_player_buttons(guild_id):
     """Быстро обновить только кнопки плеера без пересоздания"""
@@ -326,17 +336,19 @@ async def update_player_message(guild_id):
 
 @bot.event
 async def on_ready():
-    print(f"✅ Вошли как {bot.user}")
+    logger.info(f"✅ Вошли как {bot.user}")
     
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
     browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
     
     if cookies_file and os.path.exists(cookies_file):
-        print("🔐 YouTube cookies настроены (файл)")
+        logger.info("🔐 YouTube cookies настроены (файл)")
     elif browser_cookies:
-        print("🔐 YouTube cookies настроены (браузер)")
+        logger.info("🔐 YouTube cookies настроены (браузер)")
     else:
-        print("ℹ️ YouTube cookies не настроены")
+        logger.info("ℹ️ YouTube cookies не настроены")
+    
+    logger.info(f"📊 Лимит плейлиста установлен: {MAX_PLAYLIST_SIZE} треков")
     
     bot.add_view(MusicPlayerView())
     
@@ -347,9 +359,9 @@ async def on_ready():
     
     try:
         synced = await tree.sync()
-        print(f"📡 Синхронизированы {len(synced)} команд(ы)")
+        logger.info(f"📡 Синхронизированы {len(synced)} команд(ы)")
     except Exception as e:
-        print(f"Ошибка sync: {e}")
+        logger.error(f"Ошибка sync: {e}")
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -361,16 +373,15 @@ async def on_voice_state_update(member, before, after):
     if vc and vc.channel and len(vc.channel.members) == 1: 
         if vc.is_playing():
             vc.pause() 
-            print("⏸️ Музыка приостановлена, так как бот остался один в канале.")
+            logger.info("⏸️ Музыка приостановлена, так как бот остался один в канале.")
             await update_player_buttons(member.guild.id)
 
         await asyncio.sleep(60)  
         if len(vc.channel.members) == 1:  
             await vc.disconnect()
-            print(f"⏹️ Отключение из канала {vc.channel.name} на сервере {member.guild.name}")
+            logger.info(f"⏹️ Отключение из канала {vc.channel.name} на сервере {member.guild.name}")
             await delete_old_player(member.guild.id)
-            if member.guild.id in player_channels:
-                del player_channels[member.guild.id]
+            player_channels.pop(member.guild.id, None)
 
 @tree.command(name="play", description="Воспроизвести музыку или плейлист с YouTube")
 @app_commands.describe(query="Ссылка или запрос")
@@ -388,17 +399,17 @@ async def play(interaction: discord.Interaction, query: str):
     try:
         await interaction.response.send_message("🔍 Обрабатываю запрос...", ephemeral=True)
     except (discord.HTTPException, discord.DiscordServerError):
-        print("Не удалось отправить ответ, Discord API недоступен")
+        logger.error("Не удалось отправить ответ, Discord API недоступен")
         return
 
     search_query = f"ytsearch1:{query}" if not (query.startswith("http://") or query.startswith("https://")) else query
 
     try:
-        print(f"🔍 Обрабатываем запрос: {query}")
+        logger.info(f"🔍 Обрабатываем запрос: {query}")
         info = await asyncio.to_thread(ytdl.extract_info, search_query, False)
-        print(f"✅ Получена информация от yt-dlp")
+        logger.info(f"✅ Получена информация от yt-dlp")
     except Exception as e:
-        print(f"❌ Ошибка yt-dlp: {str(e)}")
+        logger.error(f"❌ Ошибка yt-dlp: {str(e)}")
         try:
             if is_age_restricted_error(e):
                 await interaction.edit_original_response(content="🔞 **Контент с возрастными ограничениями**\n❌ Этот контент недоступен.\n💡 Попробуйте найти другую версию: `cover`, `lyrics`, `instrumental`")
@@ -409,7 +420,7 @@ async def play(interaction: discord.Interaction, query: str):
         return
 
     if not info:
-        print("❌ yt-dlp вернул None")
+        logger.error("❌ yt-dlp вернул None")
         try:
             await interaction.edit_original_response(
                 content="❌ **Не найдено**\n"
@@ -423,16 +434,17 @@ async def play(interaction: discord.Interaction, query: str):
     queue = get_queue(interaction.guild.id)
 
     if "entries" in info and info["entries"]:
-        # ✅ ИСПРАВЛЕНИЕ: Правильное ограничение плейлиста
+        # ✅ ИСПРАВЛЕНИЕ: Правильное ограничение плейлиста до 15 треков
         total_entries = len(info["entries"])
-        print(f"📃 Найден плейлист с {total_entries} треков")
+        logger.info(f"📃 Найден плейлист с {total_entries} треков")
         
-        # Ограничиваем количество треков
+        # ✅ КРИТИЧНО: правильно ограничиваем количество треков
         entries_to_process = info["entries"][:MAX_PLAYLIST_SIZE]
-        print(f"📦 Обрабатываем {len(entries_to_process)} из {total_entries} треков (лимит: {MAX_PLAYLIST_SIZE})")
+        logger.info(f"📦 Обрабатываем {len(entries_to_process)} из {total_entries} треков (лимит: {MAX_PLAYLIST_SIZE})")
         
         added_count = 0
-        for i, entry in enumerate(entries_to_process):
+        # ✅ ВАЖНО: используем ТОЛЬКО entries_to_process, НЕ info["entries"]!
+        for entry in entries_to_process:
             if entry and entry.get("title") and entry.get("url"):
                 queue.append({
                     "title": entry["title"],
@@ -442,10 +454,10 @@ async def play(interaction: discord.Interaction, query: str):
                     "requester": interaction.user.name,
                 })
                 added_count += 1
-                print(f"  ➕ Добавлен трек {added_count}/{len(entries_to_process)}: {entry['title'][:50]}...")
+                logger.info(f"  ➕ Добавлен трек {added_count}/{len(entries_to_process)}: {entry['title'][:50]}...")
         
         if added_count == 0:
-            print("❌ Нет валидных треков в плейлисте")
+            logger.error("❌ Нет валидных треков в плейлисте")
             try:
                 await interaction.edit_original_response(content="❌ **Плейлист пуст**\nВ плейлисте нет доступных треков.")
             except:
@@ -455,13 +467,13 @@ async def play(interaction: discord.Interaction, query: str):
         try:
             if total_entries > MAX_PLAYLIST_SIZE:
                 await interaction.edit_original_response(
-                    content=f"📃 **Добавлено {added_count} треков из {total_entries}**\n"
+                    content=f"📃 **Добавлено {added_count} из {total_entries} треков**\n"
                            f"💡 *Лимит плейлиста: {MAX_PLAYLIST_SIZE} треков*"
                 )
-                print(f"✅ Плейлист обрезан: {added_count}/{total_entries} треков")
+                logger.info(f"✅ Плейлист обрезан: {added_count}/{total_entries} треков")
             else:
                 await interaction.edit_original_response(content=f"📃 **Добавлен плейлист: {added_count} треков**")
-                print(f"✅ Плейлист добавлен полностью: {added_count} треков")
+                logger.info(f"✅ Плейлист добавлен полностью: {added_count} треков")
         except:
             pass
     elif info.get("title") and info.get("url"):
@@ -473,13 +485,13 @@ async def play(interaction: discord.Interaction, query: str):
             "requester": interaction.user.name,
         }
         queue.append(track)
-        print(f"🎶 Добавлен трек: {track['title']}")
+        logger.info(f"🎶 Добавлен трек: {track['title']}")
         try:
             await interaction.edit_original_response(content=f"🎶 **Добавлен трек:** {track['title']}")
         except:
             pass
     else:
-        print("❌ Неполные данные от yt-dlp")
+        logger.error("❌ Неполные данные от yt-dlp")
         try:
             await interaction.edit_original_response(
                 content="❌ **Неполные данные**\n"
@@ -500,7 +512,7 @@ async def play_next(vc, guild_id):
     queue = get_queue(guild_id)
     if not queue:
         current_tracks[guild_id] = None
-        print("📭 Очередь пуста")
+        logger.info("📭 Очередь пуста")
         channel = player_channels.get(guild_id)
         if channel:
             await create_new_player(guild_id, channel)
@@ -508,7 +520,7 @@ async def play_next(vc, guild_id):
 
     next_track = queue.pop(0)
     current_tracks[guild_id] = next_track
-    print(f"⏭️ Следующий трек: {next_track['title']}")
+    logger.info(f"⏭️ Следующий трек: {next_track['title']}")
     
     try:
         audio_info = await asyncio.to_thread(ytdl.extract_info, next_track["url"], False)
@@ -517,16 +529,16 @@ async def play_next(vc, guild_id):
             
             def after_play(error):
                 if error:
-                    print(f"❌ Ошибка воспроизведения: {error}")
+                    logger.error(f"❌ Ошибка воспроизведения: {error}")
                 bot.loop.create_task(play_next(vc, guild_id))
             
             vc.play(source, after=after_play)
-            print(f"🎵 Играет: {next_track['title']}")
+            logger.info(f"🎵 Играет: {next_track['title']}")
         else:
-            print(f"❌ Не удалось получить аудио для: {next_track['title']}")
+            logger.error(f"❌ Не удалось получить аудио для: {next_track['title']}")
             await play_next(vc, guild_id)
     except Exception as e:
-        print(f"❌ Ошибка воспроизведения {next_track['title']}: {str(e)}")
+        logger.error(f"❌ Ошибка воспроизведения {next_track['title']}: {str(e)}")
         await play_next(vc, guild_id)
     
     # Создаем новый плеер с новым треком
@@ -568,8 +580,8 @@ async def stop(interaction: discord.Interaction):
         await interaction.response.send_message("⏹️ Остановлено и отключено.", ephemeral=True)
         
         await delete_old_player(interaction.guild.id)
-        if interaction.guild.id in player_channels:
-            del player_channels[interaction.guild.id]
+        # ✅ безопасное удаление
+        player_channels.pop(interaction.guild.id, None)
     else:
         await interaction.response.send_message("❌ Бот не подключен к голосовому каналу.", ephemeral=True)
 
