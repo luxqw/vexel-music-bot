@@ -641,7 +641,8 @@ async def help_cmd(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-bot.run(TOKEN)import os
+bot.run(TOKEN)
+import os
 import logging
 import discord
 import asyncio
