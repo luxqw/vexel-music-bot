@@ -289,4 +289,5 @@ async def help_cmd(interaction: discord.Interaction):
 """)
 
 
-bot.run(TOKEN)
+if __name__ == "__main__":
+    bot.run(TOKEN)

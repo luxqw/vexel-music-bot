@@ -1,0 +1,3 @@
+INFO:discord.client:logging in using static token
+INFO:discord.client:logging in using static token
+WARNING:root:Не удалось удалить плеер для сервера 123: test_cleanup_function.<locals>.<lambda>() takes 0 positional arguments but 1 was given
