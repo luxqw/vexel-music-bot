@@ -7,6 +7,8 @@ from discord import app_commands
 import yt_dlp
 
 TOKEN = os.getenv("DISCORD_TOKEN")
+MAX_PLAYLIST_SIZE = int(os.getenv("MAX_PLAYLIST_SIZE", "15"))
+MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "50"))
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -87,6 +89,19 @@ async def play(interaction: discord.Interaction, query: str):
             await interaction.response.send_message("⚠️ Сначала зайдите в голосовой канал.")
             return
 
+    queue = get_queue(interaction.guild.id)
+    
+    # ✅ НОВАЯ ПРОВЕРКА: Лимит общей очереди
+    if len(queue) >= MAX_QUEUE_SIZE:
+        await interaction.response.send_message(
+            f"❌ **Очередь переполнена!**\n"
+            f"💡 Максимум треков в очереди: {MAX_QUEUE_SIZE}\n"
+            f"📊 Сейчас в очереди: {len(queue)} треков\n"
+            f"🎵 Дождитесь окончания нескольких треков или используйте `/skip`",
+            ephemeral=True
+        )
+        return
+
     if query.startswith("http://") or query.startswith("https://"):
         await interaction.response.send_message(f"🔗 Добавляю по ссылке: {query}")
     else:
@@ -100,20 +115,47 @@ async def play(interaction: discord.Interaction, query: str):
         await interaction.followup.send_message(f"❌ Ошибка при обработке запроса: {str(e)}")
         return
 
-    queue = get_queue(interaction.guild.id)
-
-    if "entries" in info:
-        for entry in info["entries"]:
+    # ✅ ОБНОВИТЬ: При добавлении плейлиста учитывать оба лимита
+    if "entries" in info and info["entries"]:
+        remaining_slots = MAX_QUEUE_SIZE - len(queue)
+        
+        if remaining_slots <= 0:
+            await interaction.edit_original_response(
+                content=f"❌ **Очередь полная!** ({len(queue)}/{MAX_QUEUE_SIZE})\n"
+                        f"🎵 Освободите место перед добавлением новых треков."
+            )
+            return
+        
+        # Ограничить как по лимиту плейлиста, так и по свободным местам в очереди
+        total_entries = len(info["entries"])
+        max_to_add = min(MAX_PLAYLIST_SIZE, remaining_slots)
+        entries_to_process = info["entries"][:max_to_add]
+        
+        # Добавить треки в очередь
+        for entry in entries_to_process:
             queue.append({
                 "title": entry["title"],
-                "url": entry["url"],  # Вернули использование url
+                "url": entry["url"],
                 "requester": interaction.user.name,
             })
-        await interaction.followup.send(f"📃 Добавлен плейлист: {len(info['entries'])} треков.")
+        
+        # Обновить сообщение с информацией о лимитах
+        await interaction.edit_original_response(
+            content=f"📃 **Добавлено {len(entries_to_process)} из {total_entries} треков**\n"
+                   f"💡 Лимит плейлиста: {MAX_PLAYLIST_SIZE} треков\n"
+                   f"📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE} треков"
+        )
     else:
+        # Для одиночных треков тоже проверяем лимит очереди
+        if len(queue) >= MAX_QUEUE_SIZE:
+            await interaction.edit_original_response(
+                content=f"❌ **Очередь полная!** ({len(queue)}/{MAX_QUEUE_SIZE})"
+            )
+            return
+        
         track = {
             "title": info["title"],
-            "url": info["url"],  # Вернули использование url
+            "url": info["url"],
             "requester": interaction.user.name,
         }
         queue.append(track)
@@ -184,11 +226,52 @@ async def skip(interaction: discord.Interaction):
 async def queue_cmd(interaction: discord.Interaction):
     log_command(interaction.user.name, "/queue")
     queue = get_queue(interaction.guild.id)
+    
     if queue:
-        text = "\n".join([f"{i+1}. {song['title']} (от {song['requester']})" for i, song in enumerate(queue)])
-        await interaction.response.send_message(f"📃 Очередь:\n{text}")
+        # Показать первые 10 треков + информацию о лимитах
+        display_tracks = queue[:10]
+        text = "\n".join([
+            f"{i+1}. {song['title'][:50]}{'...' if len(song['title']) > 50 else ''}" 
+            for i, song in enumerate(display_tracks)
+        ])
+        
+        additional_info = ""
+        if len(queue) > 10:
+            additional_info = f"\n... и еще {len(queue) - 10} треков"
+        
+        await interaction.response.send_message(
+            f"📃 **Очередь треков** ({len(queue)}/{MAX_QUEUE_SIZE}):\n"
+            f"```\n{text}{additional_info}\n```"
+        )
     else:
-        await interaction.response.send_message("📭 Очередь пуста.")
+        await interaction.response.send_message(
+            f"📭 **Очередь пуста** (0/{MAX_QUEUE_SIZE})"
+        )
+
+
+@tree.command(name="status", description="Показать статус бота и очереди")
+async def status(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/status")
+    queue = get_queue(interaction.guild.id)
+    vc = interaction.guild.voice_client
+    
+    status_text = "🤖 **Статус бота**\n"
+    
+    if vc and vc.is_connected():
+        channel_name = vc.channel.name
+        if vc.is_playing():
+            status_text += f"🎵 Играет в канале: **{channel_name}**\n"
+        elif vc.is_paused():
+            status_text += f"⏸️ На паузе в канале: **{channel_name}**\n"
+        else:
+            status_text += f"⏹️ Подключен к каналу: **{channel_name}**\n"
+    else:
+        status_text += "🔌 Не подключен к голосовому каналу\n"
+    
+    status_text += f"📊 Очередь: **{len(queue)}/{MAX_QUEUE_SIZE}** треков\n"
+    status_text += f"⚙️ Лимит плейлиста: **{MAX_PLAYLIST_SIZE}** треков"
+    
+    await interaction.response.send_message(status_text)
 
 
 @tree.command(name="help", description="Показать справку по командам")
@@ -202,6 +285,7 @@ async def help_cmd(interaction: discord.Interaction):
 - `/stop` — Остановить воспроизведение и отключиться
 - `/skip` — Пропустить текущую песню
 - `/queue` — Показать текущую очередь
+- `/status` — Показать статус бота и очереди
 """)
 
 
