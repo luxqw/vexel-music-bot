@@ -18,6 +18,7 @@ tree = bot.tree
 queues = {}
 
 logging.basicConfig(filename="bot.log", level=logging.INFO)
+logger = logging.getLogger("VexelBot")
 
 ytdl_opts = {
     "format": "bestaudio",
@@ -34,12 +35,42 @@ def get_queue(guild_id):
     return queues.setdefault(guild_id, [])
 
 
-def create_source(url):
-    return discord.FFmpegPCMAudio(
-        url,
-        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-        options='-vn'
-    )
+def create_source(video_url, title="Unknown"):
+    """
+    Create audio source for Discord with fresh stream URL extraction
+    """
+    try:
+        # Create a fresh yt-dlp instance with optimal options for stream extraction
+        ytdl_stream_opts = {
+            "format": "bestaudio",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+        }
+        
+        logger.info(f"🔍 Получаем свежий stream URL для: {title}")
+        ytdl_stream = yt_dlp.YoutubeDL(ytdl_stream_opts)
+        
+        # Extract fresh stream info
+        stream_info = ytdl_stream.extract_info(video_url, download=False)
+        
+        if stream_info and stream_info.get("url"):
+            stream_url = stream_info["url"]
+            logger.info(f"✅ Получен свежий stream URL для: {title}")
+            
+            return discord.FFmpegPCMAudio(
+                stream_url,
+                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                options='-vn'
+            )
+        else:
+            logger.error(f"❌ Не удалось получить stream URL для: {title}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка при получении stream URL для '{title}': {str(e)}")
+        return None
 
 
 @bot.event
@@ -95,9 +126,11 @@ async def play(interaction: discord.Interaction, query: str):
     search_query = f"ytsearch1:{query}" if not (query.startswith("http://") or query.startswith("https://")) else query
 
     try:
+        logger.info(f"🔍 Обрабатываем запрос: {search_query}")
         info = ytdl.extract_info(search_query, download=False)
+        logger.info("✅ Получена информация от yt-dlp")
     except Exception as e:
-        await interaction.followup.send_message(f"❌ Ошибка при обработке запроса: {str(e)}")
+        await interaction.followup.send(f"❌ Ошибка при обработке запроса: {str(e)}")
         return
 
     queue = get_queue(interaction.guild.id)
@@ -106,17 +139,18 @@ async def play(interaction: discord.Interaction, query: str):
         for entry in info["entries"]:
             queue.append({
                 "title": entry["title"],
-                "url": entry["url"],  # Вернули использование url
+                "original_url": entry.get("original_url", entry.get("webpage_url", entry["url"])),  # Store original URL
                 "requester": interaction.user.name,
             })
         await interaction.followup.send(f"📃 Добавлен плейлист: {len(info['entries'])} треков.")
     else:
         track = {
             "title": info["title"],
-            "url": info["url"],  # Вернули использование url
+            "original_url": info.get("original_url", info.get("webpage_url", info["url"])),  # Store original URL
             "requester": interaction.user.name,
         }
         queue.append(track)
+        logger.info(f"🎶 Добавлен трек: {track['title']}")
         await interaction.followup.send(f"🎶 Добавлен трек: {track['title']}")
 
     if not vc.is_playing():
@@ -129,9 +163,31 @@ async def play_next(vc, guild_id):
         return
 
     next_track = queue.pop(0)
-    source = create_source(next_track["url"])
-
-    vc.play(source, after=lambda e: bot.loop.create_task(play_next(vc, guild_id)))
+    logger.info(f"⏭ Следующий трек: {next_track['title']}")
+    
+    # Extract fresh stream URL for the track
+    source = create_source(next_track["original_url"], next_track["title"])
+    
+    if source is None:
+        logger.error(f"❌ Не удалось получить аудио для: {next_track['title']}")
+        # Try the next track in queue if this one failed
+        if queue:
+            await play_next(vc, guild_id)
+        return
+    
+    def after_playing(error):
+        if error:
+            logger.error(f"❌ Ошибка при воспроизведении: {error}")
+        bot.loop.create_task(play_next(vc, guild_id))
+    
+    try:
+        vc.play(source, after=after_playing)
+        logger.info(f"🎵 Играет: {next_track['title']}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при запуске воспроизведения: {str(e)}")
+        # Try the next track if this one failed
+        if queue:
+            await play_next(vc, guild_id)
 
 
 @tree.command(name="pause", description="Приостановить воспроизведение")
