@@ -16,6 +16,7 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 tree = bot.tree
 queues = {}
+current_tracks = {}  # Store currently playing track info for each guild
 
 logging.basicConfig(filename="bot.log", level=logging.INFO)
 
@@ -109,7 +110,7 @@ async def play(interaction: discord.Interaction, query: str):
                 "url": entry["url"],  # Вернули использование url
                 "requester": interaction.user.name,
             })
-        await interaction.followup.send(f"📃 Добавлен плейлист: {len(info['entries'])} треков.")
+        await interaction.followup.send(f"📃 Добавлен плейлист: {len(info['entries'])} треков (заказал: {interaction.user.name}).")
     else:
         track = {
             "title": info["title"],
@@ -117,7 +118,7 @@ async def play(interaction: discord.Interaction, query: str):
             "requester": interaction.user.name,
         }
         queue.append(track)
-        await interaction.followup.send(f"🎶 Добавлен трек: {track['title']}")
+        await interaction.followup.send(f"🎶 Добавлен трек: {track['title']} (заказал: {interaction.user.name})")
 
     if not vc.is_playing():
         await play_next(vc, interaction.guild.id)
@@ -126,10 +127,25 @@ async def play(interaction: discord.Interaction, query: str):
 async def play_next(vc, guild_id):
     queue = get_queue(guild_id)
     if not queue:
+        current_tracks[guild_id] = None  # Clear current track when queue is empty
         return
 
     next_track = queue.pop(0)
+    current_tracks[guild_id] = next_track  # Store current track info
     source = create_source(next_track["url"])
+
+    # Send notification about now playing track
+    guild = bot.get_guild(guild_id)
+    if guild:
+        # Find a text channel to send the now playing message
+        text_channel = None
+        for channel in guild.text_channels:
+            if channel.permissions_for(guild.me).send_messages:
+                text_channel = channel
+                break
+        
+        if text_channel:
+            await text_channel.send(f"🎵 Сейчас играет: {next_track['title']} (заказал: {next_track['requester']})")
 
     vc.play(source, after=lambda e: bot.loop.create_task(play_next(vc, guild_id)))
 
@@ -164,6 +180,7 @@ async def stop(interaction: discord.Interaction):
         vc.stop()
         await vc.disconnect()
         queues[interaction.guild.id] = []
+        current_tracks[interaction.guild.id] = None  # Clear current track info
         await interaction.response.send_message("⏹️ Остановлено и отключено.")
     else:
         await interaction.response.send_message("❌ Бот не подключен к голосовому каналу.")
@@ -176,6 +193,18 @@ async def skip(interaction: discord.Interaction):
     if vc and vc.is_playing():
         vc.stop()
         await interaction.response.send_message("⏭️ Трек пропущен.")
+    else:
+        await interaction.response.send_message("❌ Сейчас ничего не играет.")
+
+
+@tree.command(name="nowplaying", description="Показать текущий трек")
+async def nowplaying(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/nowplaying")
+    vc = interaction.guild.voice_client
+    current_track = current_tracks.get(interaction.guild.id)
+    
+    if vc and vc.is_playing() and current_track:
+        await interaction.response.send_message(f"🎵 Сейчас играет: {current_track['title']} (заказал: {current_track['requester']})")
     else:
         await interaction.response.send_message("❌ Сейчас ничего не играет.")
 
@@ -202,6 +231,7 @@ async def help_cmd(interaction: discord.Interaction):
 - `/stop` — Остановить воспроизведение и отключиться
 - `/skip` — Пропустить текущую песню
 - `/queue` — Показать текущую очередь
+- `/nowplaying` — Показать текущий трек
 """)
 
 

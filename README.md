@@ -89,6 +89,7 @@ docker compose up -d
 /stop         Stop playback and clear queue
 /skip         Skip current song
 /queue        View the current queue
+/nowplaying   Show currently playing track
 ```
 
 ---
@@ -177,6 +178,7 @@ docker compose up -d
 /stop         Остановить воспроизведение и очистить очередь
 /skip         Пропустить текущую песню
 /queue        Показать текущую очередь
+/nowplaying   Показать текущий трек
 ```
 
 ---
