@@ -16,6 +16,7 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 tree = bot.tree
 queues = {}
+player_messages = {}  # Track music player messages per guild
 
 logging.basicConfig(filename="bot.log", level=logging.INFO)
 
@@ -40,6 +41,41 @@ def create_source(url):
         before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
         options='-vn'
     )
+
+
+async def cleanup_player_message(guild_id):
+    """Clean up the music player message for a guild"""
+    if guild_id in player_messages:
+        try:
+            message = player_messages[guild_id]
+            await message.delete()
+            logging.info(f"🗑️ Очищен плеер для сервера {guild_id}")
+        except Exception as e:
+            logging.warning(f"Не удалось удалить плеер для сервера {guild_id}: {e}")
+        finally:
+            del player_messages[guild_id]
+
+
+async def send_or_update_player_message(channel, embed, guild_id):
+    """Send a new player message or update existing one"""
+    try:
+        if guild_id in player_messages:
+            # Update existing message
+            await player_messages[guild_id].edit(embed=embed)
+        else:
+            # Send new message
+            message = await channel.send(embed=embed)
+            player_messages[guild_id] = message
+    except Exception as e:
+        logging.warning(f"Не удалось отправить/обновить плеер: {e}")
+
+
+def create_player_embed(title="Музыкальный плеер", description="", status="", color=discord.Color.blue()):
+    """Create a music player embed"""
+    embed = discord.Embed(title=title, description=description, color=color)
+    if status:
+        embed.add_field(name="Статус", value=status, inline=False)
+    return embed
 
 
 @bot.event
@@ -71,6 +107,7 @@ async def on_voice_state_update(member, before, after):
         await asyncio.sleep(60)  
         if len(vc.channel.members) == 1:  
             await vc.disconnect()
+            await cleanup_player_message(member.guild.id)
             print(f"⏹️ Отключение из канала {vc.channel.name} на сервере {member.guild.name}")
 
 
@@ -120,17 +157,45 @@ async def play(interaction: discord.Interaction, query: str):
         await interaction.followup.send(f"🎶 Добавлен трек: {track['title']}")
 
     if not vc.is_playing():
+        # Create initial player embed
+        embed = create_player_embed(
+            title="🎶 Музыкальный плеер",
+            description="Готов к воспроизведению",
+            status="Загрузка...",
+            color=discord.Color.blue()
+        )
+        await send_or_update_player_message(interaction.channel, embed, interaction.guild.id)
         await play_next(vc, interaction.guild.id)
 
 
 async def play_next(vc, guild_id):
     queue = get_queue(guild_id)
     if not queue:
+        # Queue is empty, clean up the player message
+        await cleanup_player_message(guild_id)
+        logging.info("📭 Очередь пуста")
         return
 
     next_track = queue.pop(0)
     source = create_source(next_track["url"])
 
+    # Update player embed with current track
+    embed = create_player_embed(
+        title="🎵 Сейчас играет",
+        description=f"**{next_track['title']}**\nЗапросил: {next_track['requester']}",
+        status="Воспроизводится",
+        color=discord.Color.green()
+    )
+    
+    # Send/update player message in the same channel where commands are used
+    if guild_id in player_messages:
+        try:
+            channel = player_messages[guild_id].channel
+            await send_or_update_player_message(channel, embed, guild_id)
+        except Exception as e:
+            logging.warning(f"Не удалось обновить плеер: {e}")
+
+    logging.info(f"🎵 Играет: {next_track['title']}")
     vc.play(source, after=lambda e: bot.loop.create_task(play_next(vc, guild_id)))
 
 
@@ -140,6 +205,15 @@ async def pause(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
+        # Update player embed to show paused status
+        if interaction.guild.id in player_messages:
+            embed = create_player_embed(
+                title="⏸️ Воспроизведение приостановлено",
+                description="Музыка поставлена на паузу",
+                status="Приостановлено",
+                color=discord.Color.orange()
+            )
+            await send_or_update_player_message(interaction.channel, embed, interaction.guild.id)
         await interaction.response.send_message("⏸️ Воспроизведение приостановлено.")
     else:
         await interaction.response.send_message("❌ Сейчас ничего не играет.")
@@ -151,6 +225,15 @@ async def resume(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
+        # Update player embed to show playing status
+        if interaction.guild.id in player_messages:
+            embed = create_player_embed(
+                title="▶️ Воспроизведение продолжено",
+                description="Музыка продолжается",
+                status="Воспроизводится",
+                color=discord.Color.green()
+            )
+            await send_or_update_player_message(interaction.channel, embed, interaction.guild.id)
         await interaction.response.send_message("▶️ Воспроизведение продолжено.")
     else:
         await interaction.response.send_message("❌ Музыка не приостановлена.")
@@ -164,6 +247,7 @@ async def stop(interaction: discord.Interaction):
         vc.stop()
         await vc.disconnect()
         queues[interaction.guild.id] = []
+        await cleanup_player_message(interaction.guild.id)
         await interaction.response.send_message("⏹️ Остановлено и отключено.")
     else:
         await interaction.response.send_message("❌ Бот не подключен к голосовому каналу.")
