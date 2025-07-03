@@ -16,6 +16,7 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 tree = bot.tree
 queues = {}
+player_messages = {}  # Track player message IDs per guild
 
 logging.basicConfig(filename="bot.log", level=logging.INFO)
 
@@ -40,6 +41,45 @@ def create_source(url):
         before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
         options='-vn'
     )
+
+
+async def load_track_details(track_url):
+    """Load full track details for lazy-loaded tracks"""
+    try:
+        full_ytdl = yt_dlp.YoutubeDL(ytdl_opts)
+        return await asyncio.to_thread(full_ytdl.extract_info, track_url, False)
+    except Exception as e:
+        logging.error(f"Error loading track details for {track_url}: {e}")
+        return None
+
+
+async def cleanup_old_player_messages(guild_id, channel):
+    """Clean up old player messages in the guild"""
+    if guild_id in player_messages:
+        for message_id in player_messages[guild_id]:
+            try:
+                old_message = await channel.fetch_message(message_id)
+                await old_message.delete()
+            except discord.NotFound:
+                # Message already deleted, ignore
+                pass
+            except Exception as e:
+                logging.warning(f"Error deleting old player message {message_id}: {e}")
+        player_messages[guild_id] = []
+
+
+async def send_public_notification(channel, message):
+    """Send a public notification message and track it for cleanup"""
+    try:
+        public_message = await channel.send(message)
+        guild_id = channel.guild.id
+        if guild_id not in player_messages:
+            player_messages[guild_id] = []
+        player_messages[guild_id].append(public_message.id)
+        return public_message
+    except Exception as e:
+        logging.error(f"Error sending public notification: {e}")
+        return None
 
 
 @bot.event
@@ -70,6 +110,11 @@ async def on_voice_state_update(member, before, after):
 
         await asyncio.sleep(60)  
         if len(vc.channel.members) == 1:  
+            # Clean up player messages before disconnecting
+            text_channel = member.guild.system_channel or member.guild.text_channels[0] if member.guild.text_channels else None
+            if text_channel:
+                await cleanup_old_player_messages(member.guild.id, text_channel)
+            
             await vc.disconnect()
             print(f"⏹️ Отключение из канала {vc.channel.name} на сервере {member.guild.name}")
 
@@ -84,40 +129,79 @@ async def play(interaction: discord.Interaction, query: str):
         if interaction.user.voice and interaction.user.voice.channel:
             vc = await interaction.user.voice.channel.connect()
         else:
-            await interaction.response.send_message("⚠️ Сначала зайдите в голосовой канал.")
+            await interaction.response.send_message("⚠️ Сначала зайдите в голосовой канал.", ephemeral=True)
             return
 
     if query.startswith("http://") or query.startswith("https://"):
-        await interaction.response.send_message(f"🔗 Добавляю по ссылке: {query}")
+        await interaction.response.send_message(f"🔗 Добавляю по ссылке: {query}", ephemeral=True)
     else:
-        await interaction.response.send_message(f"🔍 Ищу: {query}")
+        await interaction.response.send_message(f"🔍 Ищу: {query}", ephemeral=True)
 
     search_query = f"ytsearch1:{query}" if not (query.startswith("http://") or query.startswith("https://")) else query
+    
+    # Clean up old player messages before adding new content
+    await cleanup_old_player_messages(interaction.guild.id, interaction.channel)
 
     try:
-        info = ytdl.extract_info(search_query, download=False)
+        # Check if this is a playlist URL for lazy loading
+        is_playlist = "playlist" in query.lower() or "list=" in query
+        
+        if is_playlist:
+            # Use lazy loading for playlists
+            ytdl_flat = yt_dlp.YoutubeDL({**ytdl_opts, 'extract_flat': True})
+            info = await asyncio.to_thread(ytdl_flat.extract_info, search_query, False)
+        else:
+            # Use full extraction for single tracks
+            info = await asyncio.to_thread(ytdl.extract_info, search_query, False)
     except Exception as e:
-        await interaction.followup.send_message(f"❌ Ошибка при обработке запроса: {str(e)}")
+        await interaction.followup.send(f"❌ Ошибка при обработке запроса: {str(e)}", ephemeral=True)
         return
 
     queue = get_queue(interaction.guild.id)
 
     if "entries" in info:
-        for entry in info["entries"]:
-            queue.append({
-                "title": entry["title"],
-                "url": entry["url"],  # Вернули использование url
-                "requester": interaction.user.name,
-            })
-        await interaction.followup.send(f"📃 Добавлен плейлист: {len(info['entries'])} треков.")
+        # Handle playlist
+        track_count = 0
+        for i, entry in enumerate(info["entries"]):
+            if entry:  # Some entries can be None
+                track_info = {
+                    "title": entry.get("title", f"Track {i+1}"),
+                    "url": entry.get("url") or entry.get("webpage_url"),
+                    "requester": interaction.user.name,
+                    "lazy_load": is_playlist,
+                    "loaded": not is_playlist
+                }
+                queue.append(track_info)
+                track_count += 1
+        
+        # Send ephemeral confirmation to command user
+        await interaction.followup.send(f"📃 Добавлен плейлист: {track_count} треков.", ephemeral=True)
+        
+        # Send public notification
+        playlist_title = info.get("title", "Плейлист")
+        await send_public_notification(
+            interaction.channel,
+            f"📃 **{interaction.user.display_name}** добавил плейлист: **{playlist_title}** ({track_count} треков)"
+        )
     else:
+        # Handle single track
         track = {
             "title": info["title"],
-            "url": info["url"],  # Вернули использование url
+            "url": info["url"],
             "requester": interaction.user.name,
+            "lazy_load": False,
+            "loaded": True
         }
         queue.append(track)
-        await interaction.followup.send(f"🎶 Добавлен трек: {track['title']}")
+        
+        # Send ephemeral confirmation to command user
+        await interaction.followup.send(f"🎶 Добавлен трек: {track['title']}", ephemeral=True)
+        
+        # Send public notification
+        await send_public_notification(
+            interaction.channel,
+            f"🎶 **{interaction.user.display_name}** добавил трек: **{track['title']}**"
+        )
 
     if not vc.is_playing():
         await play_next(vc, interaction.guild.id)
@@ -129,8 +213,20 @@ async def play_next(vc, guild_id):
         return
 
     next_track = queue.pop(0)
+    
+    # Handle lazy-loaded tracks
+    if next_track.get("lazy_load", False) and not next_track.get("loaded", False):
+        # Load full track details
+        track_info = await load_track_details(next_track["url"])
+        if track_info:
+            next_track["url"] = track_info["url"]
+            next_track["loaded"] = True
+        else:
+            # Skip this track if loading failed, try next
+            await play_next(vc, guild_id)
+            return
+    
     source = create_source(next_track["url"])
-
     vc.play(source, after=lambda e: bot.loop.create_task(play_next(vc, guild_id)))
 
 
@@ -164,6 +260,10 @@ async def stop(interaction: discord.Interaction):
         vc.stop()
         await vc.disconnect()
         queues[interaction.guild.id] = []
+        
+        # Clean up player messages
+        await cleanup_old_player_messages(interaction.guild.id, interaction.channel)
+        
         await interaction.response.send_message("⏹️ Остановлено и отключено.")
     else:
         await interaction.response.send_message("❌ Бот не подключен к голосовому каналу.")
