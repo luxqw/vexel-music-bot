@@ -144,7 +144,7 @@ async def play(interaction: discord.Interaction, query: str):
 
     try:
         # Check if this is a playlist URL for lazy loading
-        is_playlist = "playlist" in query.lower() or "list=" in query
+        is_playlist = ("playlist" in query.lower() and ("youtube.com" in query.lower() or "youtu.be" in query.lower())) or "list=" in query
         
         if is_playlist:
             # Use lazy loading for playlists
