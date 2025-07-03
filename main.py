@@ -47,6 +47,8 @@ def create_source(url):
 @bot.event
 async def on_ready():
     print(f"✅ Вошли как {bot.user}")
+    print(f"📊 Лимит плейлиста установлен: {MAX_PLAYLIST_SIZE} треков")
+    print(f"📊 Лимит очереди установлен: {MAX_QUEUE_SIZE} треков")
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening,
         name="/help"
@@ -118,13 +120,6 @@ async def play(interaction: discord.Interaction, query: str):
         # ✅ ОБНОВИТЬ: При добавлении плейлиста учитывать оба лимита
         remaining_slots = MAX_QUEUE_SIZE - len(queue)
         
-        if remaining_slots <= 0:
-            await interaction.followup.send(
-                f"❌ **Очередь полная!** ({len(queue)}/{MAX_QUEUE_SIZE})\n"
-                f"🎵 Освободите место перед добавлением новых треков."
-            )
-            return
-        
         # Ограничить как по лимиту плейлиста, так и по свободным местам в очереди
         total_entries = len(info["entries"])
         max_to_add = min(MAX_PLAYLIST_SIZE, remaining_slots)
@@ -153,13 +148,7 @@ async def play(interaction: discord.Interaction, query: str):
                 f"📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE} треков"
             )
     else:
-        # Для одиночных треков тоже проверяем лимит очереди
-        if len(queue) >= MAX_QUEUE_SIZE:
-            await interaction.followup.send(
-                f"❌ **Очередь полная!** ({len(queue)}/{MAX_QUEUE_SIZE})"
-            )
-            return
-        
+        # Для одиночных треков добавляем с проверкой лимита
         track = {
             "title": info["title"],
             "url": info["url"],
