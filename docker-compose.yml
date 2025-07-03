@@ -1,0 +1,17 @@
+services:
+  bot:
+    #image: ghcr.io/luxqw/vexel-music-bot:dev-latest
+    container_name: vexel-music-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1  # ✅ ДОБАВИТЬ ЭТУ СТРОКУ 
+    volumes:
+      - ./bot:/app/bot
+      - ./cookies:/app/cookies
+    working_dir: /app
+    restart: unless-stopped
+    command: ["python3", "main.py"]
