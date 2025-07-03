@@ -1,6 +1,6 @@
 <h1 align="center">🎧 Vexel Music Bot</h1>
 <p align="center">
-  Powerful, Dockerized YouTube music bot for Discord built in Python — with slash commands, playlist support, auto-disconnect, admin logs, and more.
+  Powerful, Dockerized YouTube music bot for Discord built in Python — with slash commands, playlist support, queue/user limits, requesters display, admin logs, and more.
 </p>
 
 <p align="center">
@@ -17,20 +17,23 @@
 
 ## 🌐 Language / Язык
 
-- [English](https://github.com/luxqw/vexel-music-bot#-features)
-- [Русский](https://github.com/luxqw/vexel-music-bot#-%D0%BE%D1%81%D0%BE%D0%B1%D0%B5%D0%BD%D0%BD%D0%BE%D1%81%D1%82%D0%B8)
+- [English](#-features)
+- [Русский](#-особенности)
 
 ---
 
 ## ✨ Features
 
 - ✅ Slash commands (`/play`, `/pause`, etc.)
-- 📃 YouTube playlist support
+- 📃 YouTube playlist support, with per-playlist and global queue limits (configurable)
+- 📝 Display of track requesters in the queue UI
 - 💤 Automatically pauses and disconnects when no users are in the voice channel
 - 📜 Admin command logging
 - 🔄 Automatic reconnection in case of network issues
 - 🎶 High-quality audio streaming
-- 🛠️ Easy deployment with Docker
+- 🛠️ Easy deployment with Docker & Docker Compose
+- 🐳 Ready for production and development with environment variable support
+- 🦺 Improved error handling, player cleanup, and queue management
 
 ---
 
@@ -48,8 +51,9 @@ cd vexel-music-bot
 ```env
 DISCORD_TOKEN=your_bot_token
 YDL_OPTS='{"format": "bestaudio"}'
+MAX_QUEUE_SIZE=50
+MAX_PLAYLIST_SIZE=15
 ```
-
 You can use `.env.example` as a template.
 
 ### 3. Start with Docker Compose
@@ -83,12 +87,12 @@ docker compose up -d
 ## 🧠 Slash Commands
 
 ```plaintext
-/play [url]   Play audio from YouTube URL
+/play [url]   Play audio from YouTube URL or playlist
 /pause        Pause current playback
 /resume       Resume playback
 /stop         Stop playback and clear queue
 /skip         Skip current song
-/queue        View the current queue
+/queue        View the current queue (with requester display)
 ```
 
 ---
@@ -98,9 +102,11 @@ docker compose up -d
 ```plaintext
 vexel-music-bot/
 ├── bot/                  # Discord bot logic
-│   ├── commands/         # Slash commands
+│   ├── commands/         # Slash commands implementations
 │   ├── player/           # Music player + queue system
-│   └── utils/            # Helper functions, logging
+│   ├── utils/            # Helper functions, logging
+│   ├── youtube_auth.py   # YouTube authentication (cookies, etc.)
+│   └── cookie_manager.py # Cookie management for YouTube
 ├── .env.example         
 ├── .gitignore
 ├── Dockerfile
@@ -113,12 +119,15 @@ vexel-music-bot/
 ## 🇷🇺 Особенности
 
 - ✅ Слэш-команды (`/play`, `/pause`, и т.д.)
-- 📃 Поддержка плейлистов YouTube
+- 📃 Поддержка плейлистов YouTube + ограничения на размер плейлиста и очереди
+- 📝 В очереди видно, кто заказал трек
 - 💤 Автоматическая пауза и отключение, если в голосовом канале никого нет
 - 📜 Логирование команд администраторов
 - 🔄 Автоматическое переподключение при сетевых сбоях
 - 🎶 Стриминг аудио высокого качества
-- 🛠️ Простая установка с помощью Docker
+- 🛠️ Простая установка с помощью Docker и Docker Compose
+- 🐳 Готов для продакшена и разработки, поддержка переменных окружения
+- 🦺 Улучшена обработка ошибок, очистка плеера и управление очередью
 
 ---
 
@@ -136,6 +145,8 @@ cd vexel-music-bot
 ```env
 DISCORD_TOKEN=your_bot_token
 YDL_OPTS='{"format": "bestaudio"}'
+MAX_QUEUE_SIZE=50
+MAX_PLAYLIST_SIZE=15
 ```
 
 Вы можете использовать `.env.example` как шаблон.
@@ -171,12 +182,12 @@ docker compose up -d
 ## 🧠 Слэш-команды
 
 ```plaintext
-/play [url]   Воспроизведение аудио с YouTube
+/play [url]   Воспроизведение аудио с YouTube или плейлиста
 /pause        Поставить текущий трек на паузу
 /resume       Возобновить воспроизведение
 /stop         Остановить воспроизведение и очистить очередь
 /skip         Пропустить текущую песню
-/queue        Показать текущую очередь
+/queue        Показать текущую очередь (с отображением заказчиков)
 ```
 
 ---
@@ -188,10 +199,24 @@ vexel-music-bot/
 ├── bot/                  # Логика Discord-бота
 │   ├── commands/         # Слэш-команды
 │   ├── player/           # Музыкальный плеер + система очереди
-│   └── utils/            # Вспомогательные функции, логирование
+│   ├── utils/            # Вспомогательные функции, логирование
+│   ├── youtube_auth.py   # Авторизация YouTube (cookie и др.)
+│   └── cookie_manager.py # Работа с cookie для YouTube
 ├── .env.example          
 ├── .gitignore
 ├── Dockerfile
 ├── docker-compose.yml
 └── README.md
 ```
+
+---
+
+## 📣 Release Notes & Changelog
+
+See the [releases page](https://github.com/luxqw/vexel-music-bot/releases) for full release notes and changelog.
+
+---
+
+**Note:**  
+This README may not reflect the absolute latest changes.  
+For the freshest updates, see the [commits](https://github.com/luxqw/vexel-music-bot/commits/main) and [releases](https://github.com/luxqw/vexel-music-bot/releases).
