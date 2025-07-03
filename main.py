@@ -3,6 +3,7 @@ import logging
 import discord
 import asyncio
 import sys
+import re
 from discord.ext import commands
 from discord import app_commands
 import yt_dlp
@@ -41,14 +42,21 @@ logger = logging.getLogger("VexelBot")
 
 # Добавляем поддержку cookies
 def get_ytdl_opts():
-    """Получить ytdl_opts с поддержкой cookies"""
+    """Получить ytdl_opts с улучшенными настройками"""
     ytdl_opts = {
-        "format": "bestaudio",
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best[height<=720]/best",
         "noplaylist": False,
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
         "extract_flat": False,
+        "writethumbnail": False,
+        "writeinfojson": False,
+        "logtostderr": False,
+        "extractaudio": True,
+        "audioformat": "best",
+        "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
+        "restrictfilenames": True,
     }
     
     # Проверяем файл cookies
@@ -97,6 +105,39 @@ def is_age_restricted_error(error):
         "login required"
     ]
     return any(keyword in error_str for keyword in age_restricted_keywords)
+
+def clean_search_query(query):
+    """Очистить поисковый запрос от проблемных символов"""
+    # Удаляем специальные символы которые могут вызывать проблемы
+    cleaned = re.sub(r'[^\w\s\-.,!?]', '', query)
+    return cleaned.strip()
+
+async def get_audio_url(track_url, title="Unknown"):
+    """Получить аудио URL с fallback опциями"""
+    formats_to_try = [
+        "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio",
+        "bestaudio/best[height<=720]",
+        "best[height<=480]",
+        "worst"
+    ]
+    
+    for format_selector in formats_to_try:
+        try:
+            opts = get_ytdl_opts()
+            opts["format"] = format_selector
+            
+            ytdl_temp = yt_dlp.YoutubeDL(opts)
+            info = await asyncio.to_thread(ytdl_temp.extract_info, track_url, False)
+            
+            if info and info.get("url"):
+                logger.info(f"✅ Получен аудио URL для {title} с форматом: {format_selector}")
+                return info["url"]
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Формат {format_selector} не работает для {title}: {str(e)}")
+            continue
+    
+    raise Exception(f"Не удалось получить аудио URL для {title} со всеми форматами")
 
 # Функции для ленивой загрузки треков (Issue #16)
 async def load_track_from_playlist(playlist_url, index):
@@ -444,7 +485,7 @@ async def play(interaction: discord.Interaction, query: str):
         logger.error("Не удалось отправить ответ, Discord API недоступен")
         return
 
-    search_query = f"ytsearch1:{query}" if not (query.startswith("http://") or query.startswith("https://")) else query
+    search_query = f"ytsearch1:{clean_search_query(query)}" if not (query.startswith("http://") or query.startswith("https://")) else query
 
     try:
         logger.info(f"🔍 Обрабатываем запрос: {query}")
@@ -453,8 +494,13 @@ async def play(interaction: discord.Interaction, query: str):
     except Exception as e:
         logger.error(f"❌ Ошибка yt-dlp: {str(e)}")
         try:
+            error_msg = str(e).lower()
             if is_age_restricted_error(e):
                 await interaction.edit_original_response(content="🔞 **Контент с возрастными ограничениями**\n❌ Этот контент недоступен.\n💡 Попробуйте найти другую версию: `cover`, `lyrics`, `instrumental`")
+            elif "requested format is not available" in error_msg or "format not available" in error_msg:
+                await interaction.edit_original_response(content="❌ **Формат недоступен**\n💡 Этот трек недоступен для воспроизведения.\n🔍 Попробуйте найти другую версию или используйте другой запрос.")
+            elif "video unavailable" in error_msg or "private video" in error_msg:
+                await interaction.edit_original_response(content="❌ **Видео недоступно**\n💡 Видео может быть приватным или удаленным.\n🔍 Попробуйте другой запрос.")
             else:
                 await interaction.edit_original_response(content=f"❌ Ошибка при обработке запроса: {str(e)}")
         except:
@@ -494,20 +540,32 @@ async def play(interaction: discord.Interaction, query: str):
         
         logger.info(f"📦 Обрабатываем {len(entries_to_process)} из {total_entries} треков (лимиты: плейлист={MAX_PLAYLIST_SIZE}, очередь={remaining_slots})")
         
+        # Фильтруем только валидные entries
+        valid_entries = []
+        for entry in entries_to_process:
+            if entry and entry.get("title") and (entry.get("url") or entry.get("webpage_url")):
+                valid_entries.append(entry)
+        
+        if not valid_entries:
+            await interaction.edit_original_response(
+                content="❌ **Нет доступных треков**\n"
+                       "В плейлисте нет треков доступных для воспроизведения."
+            )
+            return
+        
         added_count = 0
         # Issue #16: Ленивая загрузка - сохраняем минимальную информацию
-        for i, entry in enumerate(entries_to_process):
-            if entry and entry.get("title"):
-                queue.append({
-                    "title": entry.get("title", f"Track {i+1}"),
-                    "playlist_url": search_query,      # Оригинальная ссылка на плейлист
-                    "playlist_index": i,               # Индекс в плейлисте
-                    "lazy_load": True,                 # Флаг ленивой загрузки
-                    "loaded": False,                   # Загружен ли трек полностью
-                    "requester": interaction.user.name,
-                })
-                added_count += 1
-                logger.info(f"  ➕ Добавлен трек {added_count}/{len(entries_to_process)}: {entry.get('title', 'Unknown')[:50]}...")
+        for i, entry in enumerate(valid_entries):
+            queue.append({
+                "title": entry.get("title", f"Track {i+1}"),
+                "playlist_url": search_query,      # Оригинальная ссылка на плейлист
+                "playlist_index": i,               # Индекс в плейлисте
+                "lazy_load": True,                 # Флаг ленивой загрузки
+                "loaded": False,                   # Загружен ли трек полностью
+                "requester": interaction.user.name,
+            })
+            added_count += 1
+            logger.info(f"  ➕ Добавлен трек {added_count}/{len(valid_entries)}: {entry.get('title', 'Unknown')[:50]}...")
         
         if added_count == 0:
             logger.error("❌ Нет валидных треков в плейлисте")
@@ -592,11 +650,10 @@ async def play_next(vc, guild_id):
     current_tracks[guild_id] = next_track
     logger.info(f"⏭️ Следующий трек: {next_track['title']}")
     
-    # Issue #16: Ленивая загрузка - загружаем полную информацию только когда нужно играть
+    # Ленивая загрузка
     if next_track.get("lazy_load") and not next_track.get("loaded"):
         try:
             logger.info(f"⏳ Загружаем полную информацию для: {next_track['title']}")
-            # Получаем полную информацию о треке
             full_info = await load_track_from_playlist(
                 next_track["playlist_url"], 
                 next_track["playlist_index"]
@@ -606,21 +663,17 @@ async def play_next(vc, guild_id):
             logger.info(f"✅ Загружена полная информация для: {next_track['title']}")
         except Exception as e:
             logger.error(f"❌ Не удалось загрузить трек: {e}")
-            await play_next(vc, guild_id)  # Пропускаем и идем к следующему
+            await play_next(vc, guild_id)
             return
     
     try:
-        # Для ленивых треков URL уже загружен, для обычных треков получаем заново
-        if next_track.get("lazy_load"):
-            audio_url = next_track["url"]
+        # Получаем аудио URL с улучшенной обработкой
+        if next_track.get("url"):
+            audio_url = await get_audio_url(next_track["url"], next_track["title"])
         else:
-            audio_info = await asyncio.to_thread(ytdl.extract_info, next_track["url"], False)
-            if audio_info and audio_info.get("url"):
-                audio_url = audio_info["url"]
-            else:
-                logger.error(f"❌ Не удалось получить аудио URL для: {next_track['title']}")
-                await play_next(vc, guild_id)
-                return
+            logger.error(f"❌ Отсутствует URL для трека: {next_track['title']}")
+            await play_next(vc, guild_id)
+            return
         
         source = create_source(audio_url)
         
@@ -631,11 +684,14 @@ async def play_next(vc, guild_id):
         
         vc.play(source, after=after_play)
         logger.info(f"🎵 Играет: {next_track['title']}")
+        
     except Exception as e:
         logger.error(f"❌ Ошибка воспроизведения {next_track['title']}: {str(e)}")
+        # Пробуем следующий трек
         await play_next(vc, guild_id)
+        return
     
-    # Создаем новый плеер с новым треком
+    # Обновляем плеер
     channel = player_channels.get(guild_id)
     if channel:
         await create_new_player(guild_id, channel)
