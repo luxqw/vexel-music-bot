@@ -9,6 +9,7 @@ import yt_dlp
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 MAX_PLAYLIST_SIZE = int(os.getenv("MAX_PLAYLIST_SIZE", "15"))
+MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "50"))
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -97,6 +98,25 @@ def is_age_restricted_error(error):
     ]
     return any(keyword in error_str for keyword in age_restricted_keywords)
 
+# Функции для ленивой загрузки треков (Issue #16)
+async def load_track_from_playlist(playlist_url, index):
+    """Загрузить конкретный трек из плейлиста"""
+    try:
+        # Получаем плейлист заново
+        info = await asyncio.to_thread(ytdl.extract_info, playlist_url, False)
+        
+        if "entries" in info and len(info["entries"]) > index:
+            entry = info["entries"][index]
+            return {
+                "url": entry["url"],
+                "webpage_url": entry.get("webpage_url", ""),
+                "thumbnail": entry.get("thumbnail", ""),
+                "title": entry.get("title", "Unknown Track")
+            }
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки трека {index}: {e}")
+        raise
+
 class MusicPlayerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -160,23 +180,26 @@ class MusicPlayerView(discord.ui.View):
         queue = get_queue(interaction.guild.id)
         
         if not queue:
-            await interaction.response.send_message("📭 Очередь пуста.", ephemeral=True)
+            await interaction.response.send_message(f"📭 **Очередь пуста** (0/{MAX_QUEUE_SIZE})", ephemeral=True)
             return
         
         embed = discord.Embed(
-            title="📃 Очередь треков",
+            title=f"📃 Очередь треков ({len(queue)}/{MAX_QUEUE_SIZE})",
             color=0x2f3136
         )
         
         queue_text = ""
         for i, track in enumerate(queue[:10]):
-            queue_text += f"`{i+1}.` **{track['title'][:45]}{'...' if len(track['title']) > 45 else ''}**\n*Добавлено: {track['requester']}*\n\n"
+            # Issue #21: Показываем заказчика для каждого трека
+            status_icon = "⏳" if track.get("lazy_load") and not track.get("loaded") else "✅"
+            title_display = track['title'][:45] + ('...' if len(track['title']) > 45 else '')
+            queue_text += f"`{i+1}.` {status_icon} **{title_display}**\n*Заказал: {track['requester']}*\n\n"
         
         if len(queue) > 10:
             queue_text += f"*... и еще {len(queue) - 10} треков*"
         
         embed.description = queue_text if queue_text else "Очередь пуста"
-        embed.set_footer(text=f"Всего треков в очереди: {len(queue)}")
+        embed.set_footer(text=f"Всего треков в очереди: {len(queue)}/{MAX_QUEUE_SIZE}")
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -191,6 +214,7 @@ def create_player_embed(guild_id):
         embed.title = "🎵 Сейчас играет"
         embed.description = f"**{current_track['title']}**"
         
+        # Issue #21: Показываем заказчика текущего трека
         embed.add_field(
             name="👤 Заказал", 
             value=current_track['requester'], 
@@ -198,7 +222,7 @@ def create_player_embed(guild_id):
         )
         embed.add_field(
             name="📃 В очереди", 
-            value=f"{len(queue)} треков", 
+            value=f"{len(queue)}/{MAX_QUEUE_SIZE} треков", 
             inline=True
         )
         
@@ -224,7 +248,7 @@ def create_player_embed(guild_id):
         if queue:
             embed.add_field(
                 name="📃 В очереди ожидает", 
-                value=f"{len(queue)} треков", 
+                value=f"{len(queue)}/{MAX_QUEUE_SIZE} треков", 
                 inline=True
             )
         
@@ -349,6 +373,7 @@ async def on_ready():
         logger.info("ℹ️ YouTube cookies не настроены")
     
     logger.info(f"📊 Лимит плейлиста установлен: {MAX_PLAYLIST_SIZE} треков")
+    logger.info(f"📊 Лимит очереди установлен: {MAX_QUEUE_SIZE} треков")
     
     bot.add_view(MusicPlayerView())
     
@@ -380,8 +405,12 @@ async def on_voice_state_update(member, before, after):
         if len(vc.channel.members) == 1:  
             await vc.disconnect()
             logger.info(f"⏹️ Отключение из канала {vc.channel.name} на сервере {member.guild.name}")
+            # Issue #20: Исправляем удаление плеера после отключения
             await delete_old_player(member.guild.id)
             player_channels.pop(member.guild.id, None)
+            # Очищаем данные о текущем треке и очереди
+            current_tracks.pop(member.guild.id, None)
+            queues.pop(member.guild.id, None)
 
 @tree.command(name="play", description="Воспроизвести музыку или плейлист с YouTube")
 @app_commands.describe(query="Ссылка или запрос")
@@ -395,6 +424,19 @@ async def play(interaction: discord.Interaction, query: str):
         else:
             await interaction.response.send_message("⚠️ Сначала зайдите в голосовой канал.", ephemeral=True)
             return
+
+    # Issue #19: Проверка лимита общей очереди
+    queue = get_queue(interaction.guild.id)
+    
+    if len(queue) >= MAX_QUEUE_SIZE:
+        await interaction.response.send_message(
+            f"❌ **Очередь переполнена!**\n"
+            f"💡 Максимум треков в очереди: {MAX_QUEUE_SIZE}\n"
+            f"📊 Сейчас в очереди: {len(queue)} треков\n"
+            f"🎵 Дождитесь окончания нескольких треков или используйте `/skip`",
+            ephemeral=True
+        )
+        return
 
     try:
         await interaction.response.send_message("🔍 Обрабатываю запрос...", ephemeral=True)
@@ -431,30 +473,41 @@ async def play(interaction: discord.Interaction, query: str):
             pass
         return
 
-    queue = get_queue(interaction.guild.id)
-
     if "entries" in info and info["entries"]:
-        # ✅ ИСПРАВЛЕНИЕ: Правильное ограничение плейлиста до 15 треков
+        # Issue #16: Ленивая загрузка плейлистов
         total_entries = len(info["entries"])
         logger.info(f"📃 Найден плейлист с {total_entries} треков")
         
-        # ✅ КРИТИЧНО: правильно ограничиваем количество треков
-        entries_to_process = info["entries"][:MAX_PLAYLIST_SIZE]
-        logger.info(f"📦 Обрабатываем {len(entries_to_process)} из {total_entries} треков (лимит: {MAX_PLAYLIST_SIZE})")
+        # Issue #19: Учитываем оба лимита
+        remaining_slots = MAX_QUEUE_SIZE - len(queue)
+        
+        if remaining_slots <= 0:
+            await interaction.edit_original_response(
+                content=f"❌ **Очередь полная!** ({len(queue)}/{MAX_QUEUE_SIZE})\n"
+                        f"🎵 Освободите место перед добавлением новых треков."
+            )
+            return
+        
+        # Ограничить как по лимиту плейлиста, так и по свободным местам в очереди
+        max_to_add = min(MAX_PLAYLIST_SIZE, remaining_slots)
+        entries_to_process = info["entries"][:max_to_add]
+        
+        logger.info(f"📦 Обрабатываем {len(entries_to_process)} из {total_entries} треков (лимиты: плейлист={MAX_PLAYLIST_SIZE}, очередь={remaining_slots})")
         
         added_count = 0
-        # ✅ ВАЖНО: используем ТОЛЬКО entries_to_process, НЕ info["entries"]!
-        for entry in entries_to_process:
-            if entry and entry.get("title") and entry.get("url"):
+        # Issue #16: Ленивая загрузка - сохраняем минимальную информацию
+        for i, entry in enumerate(entries_to_process):
+            if entry and entry.get("title"):
                 queue.append({
-                    "title": entry["title"],
-                    "url": entry["url"],
-                    "webpage_url": entry.get("webpage_url", ""),
-                    "thumbnail": entry.get("thumbnail", ""),
+                    "title": entry.get("title", f"Track {i+1}"),
+                    "playlist_url": search_query,      # Оригинальная ссылка на плейлист
+                    "playlist_index": i,               # Индекс в плейлисте
+                    "lazy_load": True,                 # Флаг ленивой загрузки
+                    "loaded": False,                   # Загружен ли трек полностью
                     "requester": interaction.user.name,
                 })
                 added_count += 1
-                logger.info(f"  ➕ Добавлен трек {added_count}/{len(entries_to_process)}: {entry['title'][:50]}...")
+                logger.info(f"  ➕ Добавлен трек {added_count}/{len(entries_to_process)}: {entry.get('title', 'Unknown')[:50]}...")
         
         if added_count == 0:
             logger.error("❌ Нет валидных треков в плейлисте")
@@ -465,29 +518,46 @@ async def play(interaction: discord.Interaction, query: str):
             return
         
         try:
-            if total_entries > MAX_PLAYLIST_SIZE:
-                await interaction.edit_original_response(
-                    content=f"📃 **Добавлено {added_count} из {total_entries} треков**\n"
-                           f"💡 Лимит плейлиста: {MAX_PLAYLIST_SIZE} треков"
-                )
-                logger.info(f"✅ Плейлист обрезан: {added_count}/{total_entries} треков")
-            else:
-                await interaction.edit_original_response(content=f"📃 **Добавлен плейлист: {added_count} треков**")
-                logger.info(f"✅ Плейлист добавлен полностью: {added_count} треков")
+            # Обновить сообщение с информацией о лимитах
+            message_parts = []
+            message_parts.append(f"📃 **Добавлено {added_count} из {total_entries} треков**")
+            
+            if total_entries > max_to_add:
+                if remaining_slots < MAX_PLAYLIST_SIZE:
+                    message_parts.append(f"💡 Ограничено лимитом очереди: {remaining_slots} свободных мест")
+                else:
+                    message_parts.append(f"💡 Ограничено лимитом плейлиста: {MAX_PLAYLIST_SIZE} треков")
+            
+            message_parts.append(f"📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE} треков")
+            
+            await interaction.edit_original_response(content="\n".join(message_parts))
+            logger.info(f"✅ Плейлист добавлен: {added_count}/{total_entries} треков")
         except:
             pass
-    elif info.get("title") and info.get("url"):
+    elif info.get("title"):
+        # Для одиночных треков тоже проверяем лимит очереди
+        if len(queue) >= MAX_QUEUE_SIZE:
+            await interaction.edit_original_response(
+                content=f"❌ **Очередь полная!** ({len(queue)}/{MAX_QUEUE_SIZE})"
+            )
+            return
+            
         track = {
             "title": info["title"],
-            "url": info["url"],
+            "url": info.get("url", ""),
             "webpage_url": info.get("webpage_url", ""),
             "thumbnail": info.get("thumbnail", ""),
             "requester": interaction.user.name,
+            "lazy_load": False,
+            "loaded": True,
         }
         queue.append(track)
         logger.info(f"🎶 Добавлен трек: {track['title']}")
         try:
-            await interaction.edit_original_response(content=f"🎶 **Добавлен трек:** {track['title']}")
+            await interaction.edit_original_response(
+                content=f"🎶 **Добавлен трек:** {track['title']}\n"
+                        f"📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE} треков"
+            )
         except:
             pass
     else:
@@ -522,21 +592,45 @@ async def play_next(vc, guild_id):
     current_tracks[guild_id] = next_track
     logger.info(f"⏭️ Следующий трек: {next_track['title']}")
     
+    # Issue #16: Ленивая загрузка - загружаем полную информацию только когда нужно играть
+    if next_track.get("lazy_load") and not next_track.get("loaded"):
+        try:
+            logger.info(f"⏳ Загружаем полную информацию для: {next_track['title']}")
+            # Получаем полную информацию о треке
+            full_info = await load_track_from_playlist(
+                next_track["playlist_url"], 
+                next_track["playlist_index"]
+            )
+            next_track.update(full_info)
+            next_track["loaded"] = True
+            logger.info(f"✅ Загружена полная информация для: {next_track['title']}")
+        except Exception as e:
+            logger.error(f"❌ Не удалось загрузить трек: {e}")
+            await play_next(vc, guild_id)  # Пропускаем и идем к следующему
+            return
+    
     try:
-        audio_info = await asyncio.to_thread(ytdl.extract_info, next_track["url"], False)
-        if audio_info and audio_info.get("url"):
-            source = create_source(audio_info["url"])
-            
-            def after_play(error):
-                if error:
-                    logger.error(f"❌ Ошибка воспроизведения: {error}")
-                bot.loop.create_task(play_next(vc, guild_id))
-            
-            vc.play(source, after=after_play)
-            logger.info(f"🎵 Играет: {next_track['title']}")
+        # Для ленивых треков URL уже загружен, для обычных треков получаем заново
+        if next_track.get("lazy_load"):
+            audio_url = next_track["url"]
         else:
-            logger.error(f"❌ Не удалось получить аудио для: {next_track['title']}")
-            await play_next(vc, guild_id)
+            audio_info = await asyncio.to_thread(ytdl.extract_info, next_track["url"], False)
+            if audio_info and audio_info.get("url"):
+                audio_url = audio_info["url"]
+            else:
+                logger.error(f"❌ Не удалось получить аудио URL для: {next_track['title']}")
+                await play_next(vc, guild_id)
+                return
+        
+        source = create_source(audio_url)
+        
+        def after_play(error):
+            if error:
+                logger.error(f"❌ Ошибка воспроизведения: {error}")
+            bot.loop.create_task(play_next(vc, guild_id))
+        
+        vc.play(source, after=after_play)
+        logger.info(f"🎵 Играет: {next_track['title']}")
     except Exception as e:
         logger.error(f"❌ Ошибка воспроизведения {next_track['title']}: {str(e)}")
         await play_next(vc, guild_id)
@@ -601,23 +695,71 @@ async def queue_cmd(interaction: discord.Interaction):
     queue = get_queue(interaction.guild.id)
     
     if not queue:
-        await interaction.response.send_message("📭 Очередь пуста.", ephemeral=True)
+        await interaction.response.send_message(f"📭 **Очередь пуста** (0/{MAX_QUEUE_SIZE})", ephemeral=True)
         return
     
     embed = discord.Embed(
-        title="📃 Очередь треков",
+        title=f"📃 Очередь треков ({len(queue)}/{MAX_QUEUE_SIZE})",
         color=0x2f3136
     )
     
     queue_text = ""
     for i, track in enumerate(queue[:10]):
-        queue_text += f"`{i+1}.` **{track['title'][:45]}{'...' if len(track['title']) > 45 else ''}**\n*Добавлено: {track['requester']}*\n\n"
+        # Issue #21: Показываем заказчика для каждого трека
+        # Issue #16: Показываем статус загрузки
+        status_icon = "⏳" if track.get("lazy_load") and not track.get("loaded") else "✅"
+        title_display = track['title'][:45] + ('...' if len(track['title']) > 45 else '')
+        queue_text += f"`{i+1}.` {status_icon} **{title_display}**\n*Заказал: {track['requester']}*\n\n"
     
     if len(queue) > 10:
         queue_text += f"*... и еще {len(queue) - 10} треков*"
     
     embed.description = queue_text
-    embed.set_footer(text=f"Всего треков в очереди: {len(queue)}")
+    embed.set_footer(text=f"Всего треков в очереди: {len(queue)}/{MAX_QUEUE_SIZE}")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@tree.command(name="status", description="Показать статус бота и очереди")
+async def status(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/status")
+    queue = get_queue(interaction.guild.id)
+    vc = interaction.guild.voice_client
+    current_track = current_tracks.get(interaction.guild.id)
+    
+    embed = discord.Embed(
+        title="🤖 Статус бота",
+        color=0x2f3136
+    )
+    
+    # Статус подключения и воспроизведения
+    if vc and vc.is_connected():
+        channel_name = vc.channel.name
+        if vc.is_playing():
+            embed.add_field(name="🔊 Статус", value=f"🎵 Играет в канале: **{channel_name}**", inline=False)
+        elif vc.is_paused():
+            embed.add_field(name="🔊 Статус", value=f"⏸️ На паузе в канале: **{channel_name}**", inline=False)
+        else:
+            embed.add_field(name="🔊 Статус", value=f"⏹️ Подключен к каналу: **{channel_name}**", inline=False)
+    else:
+        embed.add_field(name="🔊 Статус", value="🔌 Не подключен к голосовому каналу", inline=False)
+    
+    # Текущий трек
+    if current_track:
+        embed.add_field(
+            name="🎵 Сейчас играет", 
+            value=f"**{current_track['title']}**\n*Заказал: {current_track['requester']}*", 
+            inline=False
+        )
+    
+    # Статистика очереди
+    embed.add_field(name="📊 Очередь", value=f"**{len(queue)}/{MAX_QUEUE_SIZE}** треков", inline=True)
+    embed.add_field(name="⚙️ Лимит плейлиста", value=f"**{MAX_PLAYLIST_SIZE}** треков", inline=True)
+    
+    # Статистика ленивой загрузки
+    if queue:
+        lazy_count = sum(1 for track in queue if track.get("lazy_load") and not track.get("loaded"))
+        if lazy_count > 0:
+            embed.add_field(name="⏳ К загрузке", value=f"**{lazy_count}** треков", inline=True)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -639,7 +781,8 @@ async def help_cmd(interaction: discord.Interaction):
             "`/resume` — Продолжить\n"
             "`/stop` — Остановить и отключиться\n"
             "`/skip` — Пропустить трек\n"
-            "`/queue` — Показать очередь"
+            "`/queue` — Показать очередь\n"
+            "`/status` — Статус бота"
         ),
         inline=False
     )
@@ -656,8 +799,13 @@ async def help_cmd(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name="ℹ️ Лимиты",
-        value=f"Максимум треков из плейлиста: {MAX_PLAYLIST_SIZE}",
+        name="ℹ️ Лимиты и особенности",
+        value=(
+            f"📊 Максимум треков в очереди: **{MAX_QUEUE_SIZE}**\n"
+            f"📃 Максимум треков из плейлиста: **{MAX_PLAYLIST_SIZE}**\n"
+            "⚡ Быстрая загрузка плейлистов (Lazy Loading)\n"
+            "👤 Отображение заказчиков треков"
+        ),
         inline=False
     )
     
