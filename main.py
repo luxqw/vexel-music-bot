@@ -49,7 +49,7 @@ def get_ytdl_opts(extract_flat=False):
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
-        "extract_flat": extract_flat,  # Важно: можем управлять этим параметром
+        "extract_flat": extract_flat,
         "writethumbnail": False,
         "writeinfojson": False,
         "logtostderr": False,
@@ -108,9 +108,85 @@ def is_age_restricted_error(error):
 
 def clean_search_query(query):
     """Очистить поисковый запрос от проблемных символов"""
-    # Удаляем специальные символы которые могут вызывать проблемы
     cleaned = re.sub(r'[^\w\s\-.,!?]', '', query)
     return cleaned.strip()
+
+async def safe_voice_connect(channel, max_retries=3):
+    """Безопасное подключение к голосовому каналу с retry механизмом"""
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"🔌 Попытка подключения к голосовому каналу {channel.name} (попытка {attempt + 1}/{max_retries})")
+            
+            # Проверяем, есть ли уже подключение к этой гильдии
+            existing_vc = discord.utils.get(bot.voice_clients, guild=channel.guild)
+            if existing_vc:
+                if existing_vc.channel == channel:
+                    logger.info("✅ Уже подключен к этому каналу")
+                    return existing_vc
+                else:
+                    logger.info("🔄 Перемещаемся в новый канал")
+                    await existing_vc.move_to(channel)
+                    return existing_vc
+            
+            # Новое подключение
+            vc = await channel.connect(timeout=10.0, reconnect=True)
+            logger.info(f"✅ Успешно подключен к {channel.name}")
+            return vc
+            
+        except discord.errors.ClientException as e:
+            logger.warning(f"⚠️ ClientException при подключении (попытка {attempt + 1}): {e}")
+            if "already connected" in str(e).lower():
+                existing_vc = discord.utils.get(bot.voice_clients, guild=channel.guild)
+                if existing_vc:
+                    return existing_vc
+        except asyncio.TimeoutError:
+            logger.warning(f"⏰ Таймаут подключения (попытка {attempt + 1})")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка подключения (попытка {attempt + 1}): {e}")
+        
+        if attempt < max_retries - 1:
+            wait_time = 2 ** attempt  # Экспоненциальная задержка
+            logger.info(f"⏳ Ждем {wait_time} секунд перед повторной попыткой...")
+            await asyncio.sleep(wait_time)
+    
+    raise Exception(f"Не удалось подключиться к голосовому каналу после {max_retries} попыток")
+
+async def safe_voice_disconnect(vc, guild_id):
+    """Безопасное отключение от голосового канала"""
+    if not vc:
+        return
+    
+    try:
+        logger.info("🔌 Отключаемся от голосового канала...")
+        
+        # Останавливаем воспроизведение
+        if vc.is_playing() or vc.is_paused():
+            vc.stop()
+        
+        # Отключаемся
+        await vc.disconnect(force=True)
+        logger.info("✅ Успешно отключились от голосового канала")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отключении от голосового канала: {e}")
+    finally:
+        # Очищаем данные в любом случае
+        await cleanup_guild_data(guild_id)
+
+async def cleanup_guild_data(guild_id):
+    """Полная очистка данных гильдии"""
+    try:
+        # Удаляем плеер
+        await delete_old_player(guild_id)
+        
+        # Очищаем все данные
+        player_channels.pop(guild_id, None)
+        current_tracks.pop(guild_id, None)
+        queues.pop(guild_id, None)
+        
+        logger.info(f"🧹 Очищены данные для гильдии {guild_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при очистке данных гильдии: {e}")
 
 async def get_audio_url(track_url, title="Unknown"):
     """Получить аудио URL с fallback опциями"""
@@ -123,7 +199,7 @@ async def get_audio_url(track_url, title="Unknown"):
     
     for format_selector in formats_to_try:
         try:
-            opts = get_ytdl_opts(extract_flat=False)
+            opts = get_ytdl_opts()
             opts["format"] = format_selector
             
             ytdl_temp = yt_dlp.YoutubeDL(opts)
@@ -140,28 +216,23 @@ async def get_audio_url(track_url, title="Unknown"):
     raise Exception(f"Не удалось получить аудио URL для {title} со всеми форматами")
 
 # Функции для ленивой загрузки треков
-async def load_track_lazy(track_url):
-    """Загрузить конкретный трек лениво"""
+async def load_track_from_playlist(playlist_url, index):
+    """Загрузить конкретный трек из плейлиста"""
     try:
-        logger.info(f"⏳ Загружаем полную информацию для: {track_url}")
-        
-        # Используем extract_flat=False для получения полной информации о конкретном треке
-        opts = get_ytdl_opts(extract_flat=False)
+        opts = get_ytdl_opts(extract_flat=False)  # Полная загрузка для конкретного трека
         ytdl_temp = yt_dlp.YoutubeDL(opts)
-        info = await asyncio.to_thread(ytdl_temp.extract_info, track_url, False)
+        info = await asyncio.to_thread(ytdl_temp.extract_info, playlist_url, False)
         
-        if info:
+        if "entries" in info and len(info["entries"]) > index:
+            entry = info["entries"][index]
             return {
-                "url": info.get("url", ""),
-                "webpage_url": info.get("webpage_url", track_url),
-                "thumbnail": info.get("thumbnail", ""),
-                "title": info.get("title", "Unknown Track")
+                "url": entry.get("url", ""),
+                "webpage_url": entry.get("webpage_url", ""),
+                "thumbnail": entry.get("thumbnail", ""),
+                "title": entry.get("title", "Unknown Track")
             }
-        else:
-            raise Exception("Не удалось получить информацию о треке")
-            
     except Exception as e:
-        logger.error(f"❌ Ошибка ленивой загрузки трека: {e}")
+        logger.error(f"❌ Ошибка загрузки трека {index}: {e}")
         raise
 
 class MusicPlayerView(discord.ui.View):
@@ -170,63 +241,91 @@ class MusicPlayerView(discord.ui.View):
     
     @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary, custom_id="pause_resume")
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except (discord.HTTPException, discord.DiscordServerError):
+            logger.error("Не удалось отправить defer, Discord API недоступен")
+            return
         
         vc = interaction.guild.voice_client
         if not vc:
-            await interaction.followup.send("❌ Бот не подключен к голосовому каналу.", ephemeral=True)
+            try:
+                await interaction.followup.send("❌ Бот не подключен к голосовому каналу.", ephemeral=True)
+                await create_new_player(interaction.guild.id, interaction.channel)
+            except:
+                pass
             return
         
-        if vc.is_playing():
-            vc.pause()
-            await interaction.followup.send("⏸️ Пауза", ephemeral=True)
-        elif vc.is_paused():
-            vc.resume()
-            await interaction.followup.send("▶️ Продолжаем", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Сейчас ничего не играет.", ephemeral=True)
-            return
-        
-        await update_player_buttons(interaction.guild.id)
+        try:
+            if vc.is_playing():
+                vc.pause()
+                await interaction.followup.send("⏸️ Пауза", ephemeral=True)
+            elif vc.is_paused():
+                vc.resume()
+                await interaction.followup.send("▶️ Продолжаем", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Сейчас ничего не играет.", ephemeral=True)
+                return
+            
+            await update_player_buttons(interaction.guild.id)
+        except Exception as e:
+            logger.error(f"❌ Ошибка pause/resume: {e}")
+            try:
+                await interaction.followup.send("❌ Ошибка управления воспроизведением.", ephemeral=True)
+            except:
+                pass
     
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="skip")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        
-        vc = interaction.guild.voice_client
-        if not vc or not vc.is_playing():
-            await interaction.followup.send("❌ Сейчас ничего не играет.", ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except (discord.HTTPException, discord.DiscordServerError):
             return
         
-        vc.stop()
-        await interaction.followup.send("⏭️ Скип", ephemeral=True)
+        vc = interaction.guild.voice_client
+        if not vc or not (vc.is_playing() or vc.is_paused()):
+            try:
+                await interaction.followup.send("❌ Сейчас ничего не играет.", ephemeral=True)
+            except:
+                pass
+            return
+        
+        try:
+            vc.stop()
+            await interaction.followup.send("⏭️ Скип", ephemeral=True)
+        except Exception as e:
+            logger.error(f"❌ Ошибка skip: {e}")
     
     @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="stop")
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except (discord.HTTPException, discord.DiscordServerError):
+            return
         
         vc = interaction.guild.voice_client
         if not vc:
-            await interaction.followup.send("❌ Бот не подключен к голосовому каналу.", ephemeral=True)
+            try:
+                await interaction.followup.send("❌ Бот не подключен к голосовому каналу.", ephemeral=True)
+            except:
+                pass
             return
         
-        vc.stop()
-        await vc.disconnect()
-        queues[interaction.guild.id] = []
-        current_tracks[interaction.guild.id] = None
-        
-        await interaction.followup.send("⏹️ Стоп", ephemeral=True)
-        
-        # Полная очистка плеера
-        await delete_old_player(interaction.guild.id)
-        player_channels.pop(interaction.guild.id, None)
+        try:
+            await interaction.followup.send("⏹️ Останавливаем...", ephemeral=True)
+            await safe_voice_disconnect(vc, interaction.guild.id)
+        except Exception as e:
+            logger.error(f"❌ Ошибка stop: {e}")
     
     @discord.ui.button(emoji="📃", style=discord.ButtonStyle.secondary, custom_id="queue")
     async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
         queue = get_queue(interaction.guild.id)
         
         if not queue:
-            await interaction.response.send_message(f"📭 **Очередь пуста** (0/{MAX_QUEUE_SIZE})", ephemeral=True)
+            try:
+                await interaction.response.send_message(f"📭 **Очередь пуста** (0/{MAX_QUEUE_SIZE})", ephemeral=True)
+            except:
+                pass
             return
         
         embed = discord.Embed(
@@ -246,7 +345,10 @@ class MusicPlayerView(discord.ui.View):
         embed.description = queue_text if queue_text else "Очередь пуста"
         embed.set_footer(text=f"Всего треков в очереди: {len(queue)}/{MAX_QUEUE_SIZE}")
         
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except:
+            pass
 
 def create_player_embed(guild_id):
     """Создать embed для плеера"""
@@ -342,7 +444,6 @@ async def create_new_player(guild_id, channel):
     if not channel:
         return
     
-    # Удаляем старый плеер полностью
     await delete_old_player(guild_id)
     
     embed = create_player_embed(guild_id)
@@ -389,7 +490,6 @@ async def update_player_message(guild_id):
             await message.edit(embed=embed, view=view)
             
         except (discord.NotFound, discord.HTTPException):
-            # Если плеер не найден, создаем новый
             channel = player_channels.get(guild_id)
             if channel:
                 await create_new_player(guild_id, channel)
@@ -438,15 +538,9 @@ async def on_voice_state_update(member, before, after):
             await update_player_buttons(member.guild.id)
 
         await asyncio.sleep(60)  
-        if len(vc.channel.members) == 1:  
-            await vc.disconnect()
+        if vc.channel and len(vc.channel.members) == 1:  
             logger.info(f"⏹️ Отключение из канала {vc.channel.name} на сервере {member.guild.name}")
-            
-            # Полная очистка после отключения
-            await delete_old_player(member.guild.id)
-            player_channels.pop(member.guild.id, None)
-            current_tracks.pop(member.guild.id, None)
-            queues.pop(member.guild.id, None)
+            await safe_voice_disconnect(vc, member.guild.id)
 
 @tree.command(name="play", description="Воспроизвести музыку или плейлист с YouTube")
 @app_commands.describe(query="Ссылка или запрос")
@@ -456,7 +550,15 @@ async def play(interaction: discord.Interaction, query: str):
     vc = interaction.guild.voice_client
     if not vc:
         if interaction.user.voice and interaction.user.voice.channel:
-            vc = await interaction.user.voice.channel.connect()
+            try:
+                vc = await safe_voice_connect(interaction.user.voice.channel)
+            except Exception as e:
+                await interaction.response.send_message(
+                    f"❌ **Ошибка подключения к голосовому каналу**\n"
+                    f"💡 {str(e)}", 
+                    ephemeral=True
+                )
+                return
         else:
             await interaction.response.send_message("⚠️ Сначала зайдите в голосовой канал.", ephemeral=True)
             return
@@ -485,7 +587,7 @@ async def play(interaction: discord.Interaction, query: str):
     try:
         logger.info(f"🔍 Обрабатываем запрос: {query}")
         
-        # Важно: для плейлистов используем extract_flat=True для быстрой загрузки
+        # Для плейлистов используем extract_flat=True для быстрой загрузки
         opts = get_ytdl_opts(extract_flat=True)
         ytdl_temp = yt_dlp.YoutubeDL(opts)
         info = await asyncio.to_thread(ytdl_temp.extract_info, search_query, False)
@@ -496,11 +598,11 @@ async def play(interaction: discord.Interaction, query: str):
         try:
             error_msg = str(e).lower()
             if is_age_restricted_error(e):
-                await interaction.edit_original_response(content="🔞 **Контент с возрастными ограничениями**\n❌ Этот контент недоступен.\n💡 Попробуйте найти другую версию: `cover`, `lyrics`, `instrumental`")
+                await interaction.edit_original_response(content="🔞 **Контент с возрастными ограничениями**\n❌ Этот контент недоступен.")
             elif "requested format is not available" in error_msg or "format not available" in error_msg:
-                await interaction.edit_original_response(content="❌ **Формат недоступен**\n💡 Этот трек недоступен для воспроизведения.\n🔍 Попробуйте найти другую версию или используйте другой запрос.")
+                await interaction.edit_original_response(content="❌ **Формат недоступен**\n💡 Этот трек недоступен для воспроизведения.")
             elif "video unavailable" in error_msg or "private video" in error_msg:
-                await interaction.edit_original_response(content="❌ **Видео недоступно**\n💡 Видео может быть приватным или удаленным.\n🔍 Попробуйте другой запрос.")
+                await interaction.edit_original_response(content="❌ **Видео недоступно**\n💡 Видео может быть приватным или удаленным.")
             else:
                 await interaction.edit_original_response(content=f"❌ Ошибка при обработке запроса: {str(e)}")
         except:
@@ -520,7 +622,7 @@ async def play(interaction: discord.Interaction, query: str):
         return
 
     if "entries" in info and info["entries"]:
-        # Плейлист - используем ленивую загрузку
+        # Ленивая загрузка плейлистов
         total_entries = len(info["entries"])
         logger.info(f"📃 Найден плейлист с {total_entries} треков")
         
@@ -536,12 +638,11 @@ async def play(interaction: discord.Interaction, query: str):
         max_to_add = min(MAX_PLAYLIST_SIZE, remaining_slots)
         entries_to_process = info["entries"][:max_to_add]
         
-        logger.info(f"📦 Обрабатываем {len(entries_to_process)} из {total_entries} треков (лимиты: плейлист={MAX_PLAYLIST_SIZE}, очередь={remaining_slots})")
+        logger.info(f"📦 Обрабатываем {len(entries_to_process)} из {total_entries} треков")
         
-        # Фильтруем только валидные entries
         valid_entries = []
         for entry in entries_to_process:
-            if entry and entry.get("title") and (entry.get("url") or entry.get("webpage_url") or entry.get("id")):
+            if entry and entry.get("title") and (entry.get("url") or entry.get("webpage_url")):
                 valid_entries.append(entry)
         
         if not valid_entries:
@@ -552,37 +653,18 @@ async def play(interaction: discord.Interaction, query: str):
             return
         
         added_count = 0
-        # Ленивая загрузка - сохраняем только минимальную информацию
-        for entry in valid_entries:
-            # Формируем URL для трека
-            track_url = entry.get("url") or entry.get("webpage_url")
-            if not track_url and entry.get("id"):
-                track_url = f"https://www.youtube.com/watch?v={entry['id']}"
-            
-            if track_url:
-                queue.append({
-                    "title": entry.get("title", f"Track {added_count + 1}"),
-                    "track_url": track_url,              # URL конкретного трека
-                    "lazy_load": True,                   # Флаг ленивой загрузки
-                    "loaded": False,                     # Загружен ли трек полностью
-                    "requester": interaction.user.name,
-                    "url": "",                           # Будет заполнен при загрузке
-                    "webpage_url": "",                   # Будет заполнен при загрузке
-                    "thumbnail": "",                     # Будет заполнен при загрузке
-                })
-                added_count += 1
-                logger.info(f"  ➕ Добавлен трек {added_count}/{len(valid_entries)}: {entry.get('title', 'Unknown')[:50]}...")
-        
-        if added_count == 0:
-            logger.error("❌ Нет валидных треков в плейлисте")
-            try:
-                await interaction.edit_original_response(content="❌ **Плейлист пуст**\nВ плейлисте нет доступных треков.")
-            except:
-                pass
-            return
+        for i, entry in enumerate(valid_entries):
+            queue.append({
+                "title": entry.get("title", f"Track {i+1}"),
+                "playlist_url": search_query,
+                "playlist_index": i,
+                "lazy_load": True,
+                "loaded": False,
+                "requester": interaction.user.name,
+            })
+            added_count += 1
         
         try:
-            # Обновить сообщение с информацией о лимитах
             message_parts = []
             message_parts.append(f"📃 **Добавлено {added_count} из {total_entries} треков**")
             
@@ -596,45 +678,291 @@ async def play(interaction: discord.Interaction, query: str):
             
             await interaction.edit_original_response(content="\n".join(message_parts))
             logger.info(f"✅ Плейлист добавлен: {added_count}/{total_entries} треков")
-            
-            # Отправляем публичное сообщение о добавлении плейлиста
-            public_embed = discord.Embed(
-                title="📃 Плейлист добавлен",
-                description=f"**{added_count}** треков добавлено в очередь",
-                color=0x00ff00
-            )
-            public_embed.add_field(name="👤 Заказал", value=interaction.user.mention, inline=True)
-            public_embed.add_field(name="📊 Очередь", value=f"{len(queue)}/{MAX_QUEUE_SIZE}", inline=True)
-            
-            await interaction.channel.send(embed=public_embed)
-            
-        except Exception as e:
-            logger.error(f"Ошибка при отправке ответа: {e}")
+        except:
             pass
-            
     elif info.get("title"):
-        # Одиночный трек
         if len(queue) >= MAX_QUEUE_SIZE:
             await interaction.edit_original_response(
                 content=f"❌ **Очередь полная!** ({len(queue)}/{MAX_QUEUE_SIZE})"
             )
             return
-        
-        # Для одиночных треков загружаем полную информацию сразу
-        try:
-            opts = get_ytdl_opts(extract_flat=False)
-            ytdl_temp = yt_dlp.YoutubeDL(opts)
-            full_info = await asyncio.to_thread(ytdl_temp.extract_info, search_query, False)
             
-            if full_info:
-                track = {
-                    "title": full_info["title"],
-                    "url": full_info.get("url", ""),
-                    "webpage_url": full_info.get("webpage_url", ""),
-                    "thumbnail": full_info.get("thumbnail", ""),
-                    "requester": interaction.user.name,
-                    "lazy_load": False,
-                    "loaded": True,
-                }
-                queue.append(track)
-                logger.info(f"🎶 Добав
+        track = {
+            "title": info["title"],
+            "url": info.get("url", ""),
+            "webpage_url": info.get("webpage_url", ""),
+            "thumbnail": info.get("thumbnail", ""),
+            "requester": interaction.user.name,
+            "lazy_load": False,
+            "loaded": True,
+        }
+        queue.append(track)
+        logger.info(f"🎶 Добавлен трек: {track['title']}")
+        try:
+            await interaction.edit_original_response(
+                content=f"🎶 **Добавлен трек:** {track['title']}\n"
+                        f"📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE} треков"
+            )
+        except:
+            pass
+    else:
+        logger.error("❌ Неполные данные от yt-dlp")
+        try:
+            await interaction.edit_original_response(
+                content="❌ **Неполные данные**\n"
+                       "Получены неполные данные о треке.\n"
+                       "💡 Возможно видео недоступно или заблокировано."
+            )
+        except:
+            pass
+        return
+
+    player_channels[interaction.guild.id] = interaction.channel
+    await create_new_player(interaction.guild.id, interaction.channel)
+
+    if not vc.is_playing():
+        await play_next(vc, interaction.guild.id)
+
+async def play_next(vc, guild_id):
+    """Воспроизвести следующий трек с обработкой ошибок соединения"""
+    queue = get_queue(guild_id)
+    if not queue:
+        current_tracks[guild_id] = None
+        logger.info("📭 Очередь пуста")
+        channel = player_channels.get(guild_id)
+        if channel:
+            await create_new_player(guild_id, channel)
+        return
+
+    # Проверяем состояние voice client
+    if not vc or not vc.is_connected():
+        logger.warning("⚠️ Voice client отключен, прекращаем воспроизведение")
+        await cleanup_guild_data(guild_id)
+        return
+
+    next_track = queue.pop(0)
+    current_tracks[guild_id] = next_track
+    logger.info(f"⏭️ Следующий трек: {next_track['title']}")
+    
+    # Ленивая загрузка
+    if next_track.get("lazy_load") and not next_track.get("loaded"):
+        try:
+            logger.info(f"⏳ Загружаем полную информацию для: {next_track['title']}")
+            full_info = await load_track_from_playlist(
+                next_track["playlist_url"], 
+                next_track["playlist_index"]
+            )
+            next_track.update(full_info)
+            next_track["loaded"] = True
+            logger.info(f"✅ Загружена полная информация для: {next_track['title']}")
+        except Exception as e:
+            logger.error(f"❌ Не удалось загрузить трек: {e}")
+            await play_next(vc, guild_id)
+            return
+    
+    try:
+        # Получаем аудио URL с улучшенной обработкой
+        if next_track.get("url"):
+            audio_url = await get_audio_url(next_track["url"], next_track["title"])
+        else:
+            logger.error(f"❌ Отсутствует URL для трека: {next_track['title']}")
+            await play_next(vc, guild_id)
+            return
+        
+        source = create_source(audio_url)
+        
+        def after_play(error):
+            if error:
+                logger.error(f"❌ Ошибка воспроизведения: {error}")
+                # Проверяем тип ошибки
+                error_str = str(error).lower()
+                if "4006" in error_str or "connection" in error_str:
+                    logger.error("🚨 Обнаружена ошибка соединения Discord voice (4006)")
+                    # Попытка переподключения будет в следующем цикле
+            
+            # Планируем следующий трек только если voice client еще подключен
+            if vc and vc.is_connected():
+                bot.loop.create_task(play_next(vc, guild_id))
+            else:
+                logger.warning("⚠️ Voice client отключен, прекращаем цикл воспроизведения")
+                bot.loop.create_task(cleanup_guild_data(guild_id))
+        
+        vc.play(source, after=after_play)
+        logger.info(f"🎵 Играет: {next_track['title']}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка воспроизведения {next_track['title']}: {str(e)}")
+        # Пробуем следующий трек
+        await play_next(vc, guild_id)
+        return
+    
+    # Обновляем плеер
+    channel = player_channels.get(guild_id)
+    if channel:
+        await create_new_player(guild_id, channel)
+
+@tree.command(name="pause", description="Приостановить воспроизведение")
+async def pause(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/pause")
+    vc = interaction.guild.voice_client
+    if vc and vc.is_playing():
+        vc.pause()
+        await interaction.response.send_message("⏸️ Воспроизведение приостановлено.", ephemeral=True)
+        await update_player_buttons(interaction.guild.id)
+    else:
+        await interaction.response.send_message("❌ Сейчас ничего не играет.", ephemeral=True)
+
+@tree.command(name="resume", description="Продолжить воспроизведение")
+async def resume(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/resume")
+    vc = interaction.guild.voice_client
+    if vc and vc.is_paused():
+        vc.resume()
+        await interaction.response.send_message("▶️ Воспроизведение продолжено.", ephemeral=True)
+        await update_player_buttons(interaction.guild.id)
+    else:
+        await interaction.response.send_message("❌ Музыка не приостановлена.", ephemeral=True)
+
+@tree.command(name="stop", description="Остановить воспроизведение и очистить очередь")
+async def stop(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/stop")
+    vc = interaction.guild.voice_client
+    if vc:
+        await interaction.response.send_message("⏹️ Останавливаем...", ephemeral=True)
+        await safe_voice_disconnect(vc, interaction.guild.id)
+    else:
+        await interaction.response.send_message("❌ Бот не подключен к голосовому каналу.", ephemeral=True)
+
+@tree.command(name="skip", description="Пропустить текущую песню")
+async def skip(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/skip")
+    vc = interaction.guild.voice_client
+    if vc and (vc.is_playing() or vc.is_paused()):
+        vc.stop()
+        await interaction.response.send_message("⏭️ Трек пропущен.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Сейчас ничего не играет.", ephemeral=True)
+
+@tree.command(name="queue", description="Показать текущую очередь")
+async def queue_cmd(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/queue")
+    queue = get_queue(interaction.guild.id)
+    
+    if not queue:
+        await interaction.response.send_message(f"📭 **Очередь пуста** (0/{MAX_QUEUE_SIZE})", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title=f"📃 Очередь треков ({len(queue)}/{MAX_QUEUE_SIZE})",
+        color=0x2f3136
+    )
+    
+    queue_text = ""
+    for i, track in enumerate(queue[:10]):
+        status_icon = "⏳" if track.get("lazy_load") and not track.get("loaded") else "✅"
+        title_display = track['title'][:45] + ('...' if len(track['title']) > 45 else '')
+        queue_text += f"`{i+1}.` {status_icon} **{title_display}**\n*Заказал: {track['requester']}*\n\n"
+    
+    if len(queue) > 10:
+        queue_text += f"*... и еще {len(queue) - 10} треков*"
+    
+    embed.description = queue_text
+    embed.set_footer(text=f"Всего треков в очереди: {len(queue)}/{MAX_QUEUE_SIZE}")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@tree.command(name="status", description="Показать статус бота и очереди")
+async def status(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/status")
+    queue = get_queue(interaction.guild.id)
+    vc = interaction.guild.voice_client
+    current_track = current_tracks.get(interaction.guild.id)
+    
+    embed = discord.Embed(
+        title="🤖 Статус бота",
+        color=0x2f3136
+    )
+    
+    # Статус подключения и воспроизведения
+    if vc and vc.is_connected():
+        channel_name = vc.channel.name
+        if vc.is_playing():
+            embed.add_field(name="🔊 Статус", value=f"🎵 Играет в канале: **{channel_name}**", inline=False)
+        elif vc.is_paused():
+            embed.add_field(name="🔊 Статус", value=f"⏸️ На паузе в канале: **{channel_name}**", inline=False)
+        else:
+            embed.add_field(name="🔊 Статус", value=f"⏹️ Подключен к каналу: **{channel_name}**", inline=False)
+    else:
+        embed.add_field(name="🔊 Статус", value="🔌 Не подключен к голосовому каналу", inline=False)
+    
+    # Текущий трек
+    if current_track:
+        embed.add_field(
+            name="🎵 Сейчас играет", 
+            value=f"**{current_track['title']}**\n*Заказал: {current_track['requester']}*", 
+            inline=False
+        )
+    
+    # Статистика очереди
+    embed.add_field(name="📊 Очередь", value=f"**{len(queue)}/{MAX_QUEUE_SIZE}** треков", inline=True)
+    embed.add_field(name="⚙️ Лимит плейлиста", value=f"**{MAX_PLAYLIST_SIZE}** треков", inline=True)
+    
+    # Статистика ленивой загрузки
+    if queue:
+        lazy_count = sum(1 for track in queue if track.get("lazy_load") and not track.get("loaded"))
+        if lazy_count > 0:
+            embed.add_field(name="⏳ К загрузке", value=f"**{lazy_count}** треков", inline=True)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@tree.command(name="help", description="Показать справку по командам")
+async def help_cmd(interaction: discord.Interaction):
+    log_command(interaction.user.name, "/help")
+    
+    embed = discord.Embed(
+        title="📖 Команды бота",
+        description="Управляйте музыкой с помощью команд или кнопок плеера",
+        color=0x2f3136
+    )
+    
+    embed.add_field(
+        name="🎵 Основные команды",
+        value=(
+            "`/play <запрос>` — Воспроизвести трек\n"
+            "`/pause` — Приостановить\n"
+            "`/resume` — Продолжить\n"
+            "`/stop` — Остановить и отключиться\n"
+            "`/skip` — Пропустить трек\n"
+            "`/queue` — Показать очередь\n"
+            "`/status` — Статус бота"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🎛️ Интерактивный плеер",
+        value=(
+            "⏸️/▶️ — Пауза/Воспроизведение\n"
+            "⏭️ — Пропустить трек\n"
+            "⏹️ — Остановить\n"
+            "📃 — Показать очередь"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="ℹ️ Лимиты и особенности",
+        value=(
+            f"📊 Максимум треков в очереди: **{MAX_QUEUE_SIZE}**\n"
+            f"📃 Максимум треков из плейлиста: **{MAX_PLAYLIST_SIZE}**\n"
+            "⚡ Быстрая загрузка плейлистов (Lazy Loading)\n"
+            "👤 Отображение заказчиков треков"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="💡 Все ответы команд видны только вам!")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+bot.run(TOKEN)
