@@ -4,9 +4,14 @@ import discord
 import asyncio
 import sys
 import re
+import sqlite3
+import json
+import time
+import threading
 from discord.ext import commands
 from discord import app_commands
 import yt_dlp
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 MAX_PLAYLIST_SIZE = int(os.getenv("MAX_PLAYLIST_SIZE", "15"))
@@ -28,17 +33,165 @@ current_tracks = {}
 # Словарь для хранения каналов плеера
 player_channels = {}
 
+# ✅ Улучшенная система кэширования с SQLite
+class CacheManager:
+    def __init__(self, db_path="/app/cache/bot_cache.db"):
+        self.db_path = db_path
+        self.memory_cache = {}
+        self.cache_lock = threading.RLock()
+        self.init_db()
+    
+    def init_db(self):
+        """Инициализация базы данных для постоянного кэша"""
+        try:
+            # Создаем директорию если не существует
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS track_cache (
+                        key TEXT PRIMARY KEY,
+                        data TEXT,
+                        created_at INTEGER,
+                        expires_at INTEGER
+                    )
+                ''')
+                # Очистка устаревших записей при запуске
+                current_time = int(time.time())
+                conn.execute('DELETE FROM track_cache WHERE expires_at < ?', (current_time,))
+                conn.commit()
+                
+            logger.info(f"✅ SQLite кэш инициализирован: {self.db_path}")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось инициализировать SQLite кэш: {e}")
+            logger.info("🔄 Используем только память для кэширования")
+            self.db_path = None  # Отключаем SQLite, используем только память
+    
+    def get(self, key):
+        """Получить данные из кэша (сначала память, потом SQLite)"""
+        with self.cache_lock:
+            # Проверяем память кэш
+            if key in self.memory_cache:
+                data, expires_at = self.memory_cache[key]
+                if expires_at > time.time():
+                    return data
+                else:
+                    del self.memory_cache[key]
+            
+            # Проверяем SQLite кэш если доступен
+            if self.db_path:
+                try:
+                    with sqlite3.connect(self.db_path) as conn:
+                        cursor = conn.execute(
+                            'SELECT data, expires_at FROM track_cache WHERE key = ? AND expires_at > ?',
+                            (key, int(time.time()))
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            data = json.loads(row[0])
+                            expires_at = row[1]
+                            # Загружаем в память для быстрого доступа
+                            self.memory_cache[key] = (data, expires_at)
+                            return data
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка чтения SQLite кэша: {e}")
+            
+            return None
+    
+    def set(self, key, data, ttl=3600):
+        """Сохранить данные в кэш"""
+        expires_at = int(time.time()) + ttl
+        
+        with self.cache_lock:
+            # Сохраняем в память (всегда)
+            self.memory_cache[key] = (data, expires_at)
+            
+            # Сохраняем в SQLite если доступен
+            if self.db_path:
+                try:
+                    with sqlite3.connect(self.db_path) as conn:
+                        conn.execute(
+                            'INSERT OR REPLACE INTO track_cache (key, data, created_at, expires_at) VALUES (?, ?, ?, ?)',
+                            (key, json.dumps(data), int(time.time()), expires_at)
+                        )
+                        conn.commit()
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка записи в SQLite кэш: {e}")
+    
+    def cleanup(self):
+        """Очистка устаревших записей"""
+        current_time = time.time()
+        
+        with self.cache_lock:
+            # Очищаем память кэш
+            expired_keys = [k for k, (_, exp) in self.memory_cache.items() if exp <= current_time]
+            for key in expired_keys:
+                del self.memory_cache[key]
+            
+            # Очищаем SQLite кэш если доступен
+            if self.db_path:
+                try:
+                    with sqlite3.connect(self.db_path) as conn:
+                        conn.execute('DELETE FROM track_cache WHERE expires_at < ?', (int(current_time),))
+                        conn.commit()
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка очистки SQLite кэша: {e}")
+
 # ✅ Правильное логирование с выводом в консоль
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("bot.log"),
         logging.StreamHandler(sys.stdout)
     ]
 )
 
 logger = logging.getLogger("VexelBot")
+
+# Попытка добавить файловое логирование если возможно
+try:
+    os.makedirs("/app/logs", exist_ok=True)
+    file_handler = logging.FileHandler("/app/logs/bot.log")
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    logger.info("✅ Файловое логирование активировано")
+except Exception as e:
+    logger.info(f"ℹ️ Файловое логирование недоступно: {e}")
+
+# Глобальный менеджер кэша
+cache_manager = CacheManager()
+
+# ✅ Оптимизированный пул потоков для yt-dlp
+class YTDLPPool:
+    def __init__(self, max_workers=4):
+        self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="YTDLP")
+        self.active_tasks = {}
+        self.task_lock = threading.Lock()
+    
+    def submit_task(self, task_id, func, *args, **kwargs):
+        """Отправить задачу в пул с отслеживанием"""
+        with self.task_lock:
+            if task_id in self.active_tasks:
+                # Задача уже выполняется
+                return self.active_tasks[task_id]
+            
+            future = self.executor.submit(func, *args, **kwargs)
+            self.active_tasks[task_id] = future
+            
+            def cleanup_task(fut):
+                with self.task_lock:
+                    self.active_tasks.pop(task_id, None)
+            
+            future.add_done_callback(cleanup_task)
+            return future
+    
+    def shutdown(self):
+        """Корректное завершение пула"""
+        self.executor.shutdown(wait=True)
+
+# Глобальный пул для yt-dlp операций
+ytdl_pool = YTDLPPool(max_workers=6)
 
 # Добавляем поддержку cookies
 def get_ytdl_opts(extract_flat=False):
@@ -57,13 +210,16 @@ def get_ytdl_opts(extract_flat=False):
         "audioformat": "best",
         "outtmpl": "%(extractor)s-%(id)s-%(title)s.%(ext)s",
         "restrictfilenames": True,
+        # ✅ Оптимизации для скорости
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
     }
     
     # Проверяем файл cookies
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
     if cookies_file and os.path.exists(cookies_file):
         ytdl_opts["cookiefile"] = cookies_file
-        logger.info(f"✅ Используем YouTube cookies: {cookies_file}")
     
     # Проверяем браузерные cookies
     browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
@@ -71,15 +227,10 @@ def get_ytdl_opts(extract_flat=False):
         try:
             browser, profile = browser_cookies.split(",", 1)
             ytdl_opts["cookiesfrombrowser"] = (browser.strip(), profile.strip())
-            logger.info(f"✅ Используем cookies браузера: {browser} ({profile})")
         except ValueError:
             logger.error(f"❌ Неверный формат YOUTUBE_BROWSER_COOKIES: {browser_cookies}")
     
     return ytdl_opts
-
-# Инициализируем ytdl с cookies
-ytdl_opts = get_ytdl_opts()
-ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 
 def log_command(user, command):
     logging.info(f"{user} использовал {command}")
@@ -188,8 +339,18 @@ async def cleanup_guild_data(guild_id):
     except Exception as e:
         logger.error(f"❌ Ошибка при очистке данных гильдии: {e}")
 
-async def get_audio_url(track_url, title="Unknown"):
-    """Получить аудио URL с fallback опциями"""
+# ✅ Оптимизированная функция получения аудио URL с кэшем
+async def get_audio_url(track_url, title="Unknown", use_cache=True):
+    """Получить аудио URL с многоуровневым кэшированием"""
+    cache_key = f"audio_url:{track_url}"
+    
+    # Проверяем кэш
+    if use_cache:
+        cached_url = cache_manager.get(cache_key)
+        if cached_url:
+            logger.info(f"📦 Используем кэшированный аудио URL для {title}")
+            return cached_url
+    
     formats_to_try = [
         "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio",
         "bestaudio/best[height<=720]",
@@ -202,12 +363,19 @@ async def get_audio_url(track_url, title="Unknown"):
             opts = get_ytdl_opts()
             opts["format"] = format_selector
             
-            ytdl_temp = yt_dlp.YoutubeDL(opts)
-            info = await asyncio.to_thread(ytdl_temp.extract_info, track_url, False)
+            # Используем пул потоков для неблокирующего выполнения
+            task_id = f"audio_url:{track_url}:{format_selector}"
+            future = ytdl_pool.submit_task(task_id, _extract_audio_url, opts, track_url)
             
-            if info and info.get("url"):
+            audio_url = await asyncio.wrap_future(future)
+            
+            if audio_url:
+                # Кэшируем результат на 30 минут
+                if use_cache:
+                    cache_manager.set(cache_key, audio_url, ttl=1800)
+                
                 logger.info(f"✅ Получен аудио URL для {title} с форматом: {format_selector}")
-                return info["url"]
+                return audio_url
                 
         except Exception as e:
             logger.warning(f"⚠️ Формат {format_selector} не работает для {title}: {str(e)}")
@@ -215,25 +383,194 @@ async def get_audio_url(track_url, title="Unknown"):
     
     raise Exception(f"Не удалось получить аудио URL для {title} со всеми форматами")
 
-# Функции для ленивой загрузки треков
-async def load_track_from_playlist(playlist_url, index):
-    """Загрузить конкретный трек из плейлиста"""
-    try:
-        opts = get_ytdl_opts(extract_flat=False)  # Полная загрузка для конкретного трека
-        ytdl_temp = yt_dlp.YoutubeDL(opts)
-        info = await asyncio.to_thread(ytdl_temp.extract_info, playlist_url, False)
+def _extract_audio_url(opts, track_url):
+    """Вспомогательная функция для извлечения аудио URL в отдельном потоке"""
+    ytdl_temp = yt_dlp.YoutubeDL(opts)
+    info = ytdl_temp.extract_info(track_url, download=False)
+    return info.get("url") if info else None
+
+# ✅ Улучшенная система предзагрузки с параллельной обработкой
+class PreloadManager:
+    def __init__(self):
+        self.active_preloads = {}
+        self.preload_lock = asyncio.Lock()
+    
+    async def preload_tracks(self, guild_id, count=3):
+        """Предзагрузить следующие треки с оптимизацией"""
+        try:
+            async with self.preload_lock:
+                queue = get_queue(guild_id)
+                if not queue:
+                    return
+                
+                # Находим треки для предзагрузки
+                tracks_to_preload = []
+                for i, track in enumerate(queue[:count]):
+                    if (track.get("lazy_load") and not track.get("loaded") 
+                        and not track.get("preloading")):
+                        tracks_to_preload.append((i, track))
+                
+                if not tracks_to_preload:
+                    return
+                
+                logger.info(f"🚀 Запуск предзагрузки {len(tracks_to_preload)} треков для гильдии {guild_id}")
+                
+                # Параллельная предзагрузка
+                tasks = []
+                for i, track in tracks_to_preload:
+                    track["preloading"] = True
+                    task = asyncio.create_task(self._preload_single_track(track, i))
+                    tasks.append(task)
+                
+                # Ждем завершения всех задач
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Логируем результаты
+                success_count = sum(1 for r in results if r is True)
+                logger.info(f"✅ Успешно предзагружено {success_count}/{len(tracks_to_preload)} треков")
+        except Exception as e:
+            logger.error(f"❌ Ошибка в preload_tracks: {e}")
+    
+    async def _preload_single_track(self, track, index):
+        """Предзагрузить один трек"""
+        try:
+            logger.info(f"🚀 Предзагрузка #{index + 1}: {track['title']}")
+            
+            cache_key = f"track_full:{track['playlist_url']}:{track['playlist_index']}"
+            
+            # Проверяем кэш
+            cached_data = cache_manager.get(cache_key)
+            if cached_data:
+                logger.info(f"📦 Трек уже в кэше: {track['title']}")
+                track.update(cached_data)
+                track["loaded"] = True
+                track["preloading"] = False
+                return True
+            
+            # Загружаем данные трека
+            full_info = await self._load_track_metadata(
+                track["playlist_url"], 
+                track["playlist_index"]
+            )
+            
+            if full_info:
+                # Кэшируем на 1 час
+                cache_manager.set(cache_key, full_info, ttl=3600)
+                
+                track.update(full_info)
+                track["loaded"] = True
+                logger.info(f"✅ Предзагружен: {track['title']}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка предзагрузки {track['title']}: {e}")
+            return False
+        finally:
+            track["preloading"] = False
+    
+    async def _load_track_metadata(self, playlist_url, index):
+        """Загрузить метаданные трека оптимизированным способом"""
+        try:
+            # Используем пул потоков для загрузки
+            task_id = f"metadata:{playlist_url}:{index}"
+            future = ytdl_pool.submit_task(
+                task_id, 
+                self._extract_track_metadata, 
+                playlist_url, 
+                index
+            )
+            
+            return await asyncio.wrap_future(future)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки метаданных трека {index}: {e}")
+            return None
+    
+    def _extract_track_metadata(self, playlist_url, index):
+        """Извлечь метаданные трека в отдельном потоке"""
+        try:
+            opts = get_ytdl_opts(extract_flat=False)
+            opts["skip_download"] = True
+            opts["quiet"] = True
+            opts["playliststart"] = index + 1
+            opts["playlistend"] = index + 1
+            
+            ytdl_temp = yt_dlp.YoutubeDL(opts)
+            info = ytdl_temp.extract_info(playlist_url, download=False)
+            
+            if info and "entries" in info and len(info["entries"]) > 0:
+                entry = info["entries"][0]
+                return {
+                    "url": entry.get("url", ""),
+                    "webpage_url": entry.get("webpage_url", ""),
+                    "thumbnail": entry.get("thumbnail", ""),
+                    "title": entry.get("title", "Unknown Track")
+                }
+        except Exception as e:
+            logger.error(f"❌ Ошибка извлечения метаданных: {e}")
         
-        if "entries" in info and len(info["entries"]) > index:
-            entry = info["entries"][index]
-            return {
-                "url": entry.get("url", ""),
-                "webpage_url": entry.get("webpage_url", ""),
-                "thumbnail": entry.get("thumbnail", ""),
-                "title": entry.get("title", "Unknown Track")
-            }
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки трека {index}: {e}")
-        raise
+        return None
+
+# Глобальный менеджер предзагрузки
+preload_manager = PreloadManager()
+
+def _extract_info_with_cache(search_query):
+    """Извлечь информацию с проверкой кэша и оптимизацией для плейлистов"""
+    cache_key = f"search:{search_query}"
+    
+    # Проверяем кэш
+    cached_info = cache_manager.get(cache_key)
+    if cached_info:
+        logger.info(f"📦 Используем кэшированный результат поиска")
+        return cached_info
+    
+    # Определяем, плейлист это или одиночный трек
+    is_playlist = "list=" in search_query or "playlist" in search_query.lower()
+    
+    if is_playlist:
+        # Для плейлистов получаем только базовую информацию
+        opts = get_ytdl_opts(extract_flat=True)
+        opts["playlistend"] = MAX_PLAYLIST_SIZE
+        ytdl_temp = yt_dlp.YoutubeDL(opts)
+        info = ytdl_temp.extract_info(search_query, download=False)
+        
+        # Для первых 3 треков сразу получаем полную информацию
+        if info and "entries" in info and info["entries"]:
+            logger.info(f"🚀 Быстрая предзагрузка первых 3 треков")
+            opts_full = get_ytdl_opts(extract_flat=False)
+            
+            for i in range(min(3, len(info["entries"]))):
+                entry = info["entries"][i]
+                if entry and entry.get("url"):
+                    try:
+                        opts_full["playliststart"] = i + 1
+                        opts_full["playlistend"] = i + 1
+                        ytdl_full = yt_dlp.YoutubeDL(opts_full)
+                        full_info = ytdl_full.extract_info(search_query, download=False)
+                        
+                        if full_info and "entries" in full_info and full_info["entries"]:
+                            full_entry = full_info["entries"][0]
+                            info["entries"][i].update({
+                                "url": full_entry.get("url", ""),
+                                "webpage_url": full_entry.get("webpage_url", ""),
+                                "thumbnail": full_entry.get("thumbnail", ""),
+                            })
+                            logger.info(f"✅ Предзагружен: {info['entries'][i].get('title', 'Unknown')}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Не удалось предзагрузить трек {i}: {e}")
+    else:
+        # Для одиночных треков используем обычную загрузку
+        opts = get_ytdl_opts(extract_flat=False)
+        ytdl_temp = yt_dlp.YoutubeDL(opts)
+        info = ytdl_temp.extract_info(search_query, download=False)
+    
+    # Кэшируем результат на 10 минут
+    if info:
+        cache_manager.set(cache_key, info, ttl=600)
+    
+    return info
 
 class MusicPlayerView(discord.ui.View):
     def __init__(self):
@@ -243,15 +580,13 @@ class MusicPlayerView(discord.ui.View):
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except (discord.HTTPException, discord.DiscordServerError):
-            logger.error("Не удалось отправить defer, Discord API недоступен")
+        except Exception:
             return
         
         vc = interaction.guild.voice_client
         if not vc:
             try:
                 await interaction.followup.send("❌ Бот не подключен к голосовому каналу.", ephemeral=True)
-                await create_new_player(interaction.guild.id, interaction.channel)
             except:
                 pass
             return
@@ -270,16 +605,12 @@ class MusicPlayerView(discord.ui.View):
             await update_player_buttons(interaction.guild.id)
         except Exception as e:
             logger.error(f"❌ Ошибка pause/resume: {e}")
-            try:
-                await interaction.followup.send("❌ Ошибка управления воспроизведением.", ephemeral=True)
-            except:
-                pass
     
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="skip")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except (discord.HTTPException, discord.DiscordServerError):
+        except Exception:
             return
         
         vc = interaction.guild.voice_client
@@ -300,7 +631,7 @@ class MusicPlayerView(discord.ui.View):
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except (discord.HTTPException, discord.DiscordServerError):
+        except Exception:
             return
         
         vc = interaction.guild.voice_client
@@ -335,7 +666,13 @@ class MusicPlayerView(discord.ui.View):
         
         queue_text = ""
         for i, track in enumerate(queue[:10]):
-            status_icon = "⏳" if track.get("lazy_load") and not track.get("loaded") else "✅"
+            if track.get("preloading"):
+                status_icon = "🚀"
+            elif track.get("lazy_load") and not track.get("loaded"):
+                status_icon = "⏳"
+            else:
+                status_icon = "✅"
+            
             title_display = track['title'][:45] + ('...' if len(track['title']) > 45 else '')
             queue_text += f"`{i+1}.` {status_icon} **{title_display}**\n*Заказал: {track['requester']}*\n\n"
         
@@ -449,67 +786,38 @@ async def create_new_player(guild_id, channel):
     embed = create_player_embed(guild_id)
     view = MusicPlayerView()
     
-    guild = bot.get_guild(guild_id)
-    vc = discord.utils.get(bot.voice_clients, guild=guild) if guild else None
-    
-    for item in view.children:
-        if item.custom_id == "pause_resume":
-            if vc and vc.is_playing():
-                item.emoji = "⏸️"
-            else:
-                item.emoji = "▶️"
-            break
-    
     try:
         player_msg = await channel.send(embed=embed, view=view)
         player_messages[guild_id] = player_msg
         player_channels[guild_id] = channel
         return True
-    except discord.HTTPException:
+    except Exception:
         return False
 
-async def update_player_message(guild_id):
-    """Обновить сообщение плеера"""
-    if guild_id in player_messages:
+# ✅ Периодическая очистка кэша
+async def cleanup_cache_periodic():
+    """Периодическая очистка кэша"""
+    while True:
         try:
-            message = player_messages[guild_id]
-            embed = create_player_embed(guild_id)
-            view = MusicPlayerView()
-            
-            guild = bot.get_guild(guild_id)
-            vc = discord.utils.get(bot.voice_clients, guild=guild) if guild else None
-            
-            for item in view.children:
-                if item.custom_id == "pause_resume":
-                    if vc and vc.is_playing():
-                        item.emoji = "⏸️"
-                    else:
-                        item.emoji = "▶️"
-                    break
-            
-            await message.edit(embed=embed, view=view)
-            
-        except (discord.NotFound, discord.HTTPException):
-            channel = player_channels.get(guild_id)
-            if channel:
-                await create_new_player(guild_id, channel)
+            await asyncio.sleep(1800)  # Каждые 30 минут
+            cache_manager.cleanup()
+            logger.info("🧹 Выполнена очистка кэша")
+        except Exception as e:
+            logger.error(f"❌ Ошибка очистки кэша: {e}")
 
 @bot.event
 async def on_ready():
     logger.info(f"✅ Вошли как {bot.user}")
     
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
-    browser_cookies = os.getenv("YOUTUBE_BROWSER_COOKIES")
-    
     if cookies_file and os.path.exists(cookies_file):
-        logger.info("🔐 YouTube cookies настроены (файл)")
-    elif browser_cookies:
-        logger.info("🔐 YouTube cookies настроены (браузер)")
+        logger.info("🔐 YouTube cookies настроены")
     else:
         logger.info("ℹ️ YouTube cookies не настроены")
     
-    logger.info(f"📊 Лимит плейлиста установлен: {MAX_PLAYLIST_SIZE} треков")
-    logger.info(f"📊 Лимит очереди установлен: {MAX_QUEUE_SIZE} треков")
+    logger.info(f"📊 Лимит плейлиста: {MAX_PLAYLIST_SIZE} треков")
+    logger.info(f"📊 Лимит очереди: {MAX_QUEUE_SIZE} треков")
+    logger.info("🚀 Система кэширования активна")
     
     bot.add_view(MusicPlayerView())
     
@@ -517,6 +825,9 @@ async def on_ready():
         type=discord.ActivityType.listening,
         name="/help"
     ))
+    
+    # Запуск очистки кэша в фоне
+    asyncio.create_task(cleanup_cache_periodic())
     
     try:
         synced = await tree.sync()
@@ -535,7 +846,6 @@ async def on_voice_state_update(member, before, after):
         if vc.is_playing():
             vc.pause() 
             logger.info("⏸️ Музыка приостановлена, так как бот остался один в канале.")
-            await update_player_buttons(member.guild.id)
 
         await asyncio.sleep(60)  
         if vc.channel and len(vc.channel.members) == 1:  
@@ -563,23 +873,18 @@ async def play(interaction: discord.Interaction, query: str):
             await interaction.response.send_message("⚠️ Сначала зайдите в голосовой канал.", ephemeral=True)
             return
 
-    # Проверка лимита очереди
     queue = get_queue(interaction.guild.id)
     
     if len(queue) >= MAX_QUEUE_SIZE:
         await interaction.response.send_message(
-            f"❌ **Очередь переполнена!**\n"
-            f"💡 Максимум треков в очереди: {MAX_QUEUE_SIZE}\n"
-            f"📊 Сейчас в очереди: {len(queue)} треков\n"
-            f"🎵 Дождитесь окончания нескольких треков или используйте `/skip`",
+            f"❌ **Очередь переполнена!** ({len(queue)}/{MAX_QUEUE_SIZE})",
             ephemeral=True
         )
         return
 
     try:
         await interaction.response.send_message("🔍 Обрабатываю запрос...", ephemeral=True)
-    except (discord.HTTPException, discord.DiscordServerError):
-        logger.error("Не удалось отправить ответ, Discord API недоступен")
+    except Exception:
         return
 
     search_query = f"ytsearch1:{clean_search_query(query)}" if not (query.startswith("http://") or query.startswith("https://")) else query
@@ -587,106 +892,80 @@ async def play(interaction: discord.Interaction, query: str):
     try:
         logger.info(f"🔍 Обрабатываем запрос: {query}")
         
-        # Для плейлистов используем extract_flat=True для быстрой загрузки
-        opts = get_ytdl_opts(extract_flat=True)
-        ytdl_temp = yt_dlp.YoutubeDL(opts)
-        info = await asyncio.to_thread(ytdl_temp.extract_info, search_query, False)
+        task_id = f"search:{search_query}"
+        future = ytdl_pool.submit_task(task_id, _extract_info_with_cache, search_query)
+        info = await asyncio.wrap_future(future)
         
         logger.info(f"✅ Получена информация от yt-dlp")
     except Exception as e:
         logger.error(f"❌ Ошибка yt-dlp: {str(e)}")
         try:
-            error_msg = str(e).lower()
-            if is_age_restricted_error(e):
-                await interaction.edit_original_response(content="🔞 **Контент с возрастными ограничениями**\n❌ Этот контент недоступен.")
-            elif "requested format is not available" in error_msg or "format not available" in error_msg:
-                await interaction.edit_original_response(content="❌ **Формат недоступен**\n💡 Этот трек недоступен для воспроизведения.")
-            elif "video unavailable" in error_msg or "private video" in error_msg:
-                await interaction.edit_original_response(content="❌ **Видео недоступно**\n💡 Видео может быть приватным или удаленным.")
-            else:
-                await interaction.edit_original_response(content=f"❌ Ошибка при обработке запроса: {str(e)}")
+            await interaction.edit_original_response(content=f"❌ Ошибка при обработке запроса: {str(e)}")
         except:
             pass
         return
 
     if not info:
-        logger.error("❌ yt-dlp вернул None")
         try:
-            await interaction.edit_original_response(
-                content="❌ **Не найдено**\n"
-                       "Не удалось найти или загрузить информацию о треке.\n"
-                       "💡 Попробуйте другой запрос или проверьте ссылку."
-            )
+            await interaction.edit_original_response(content="❌ **Не найдено**\nНе удалось найти трек.")
         except:
             pass
         return
 
     if "entries" in info and info["entries"]:
-        # Ленивая загрузка плейлистов
+        # Обработка плейлистов
         total_entries = len(info["entries"])
-        logger.info(f"📃 Найден плейлист с {total_entries} треков")
-        
         remaining_slots = MAX_QUEUE_SIZE - len(queue)
-        
-        if remaining_slots <= 0:
-            await interaction.edit_original_response(
-                content=f"❌ **Очередь полная!** ({len(queue)}/{MAX_QUEUE_SIZE})\n"
-                        f"🎵 Освободите место перед добавлением новых треков."
-            )
-            return
-        
-        max_to_add = min(MAX_PLAYLIST_SIZE, remaining_slots)
+        max_to_add = min(MAX_PLAYLIST_SIZE, remaining_slots, total_entries)
         entries_to_process = info["entries"][:max_to_add]
         
-        logger.info(f"📦 Обрабатываем {len(entries_to_process)} из {total_entries} треков")
-        
-        valid_entries = []
-        for entry in entries_to_process:
-            if entry and entry.get("title") and (entry.get("url") or entry.get("webpage_url")):
-                valid_entries.append(entry)
-        
-        if not valid_entries:
-            await interaction.edit_original_response(
-                content="❌ **Нет доступных треков**\n"
-                       "В плейлисте нет треков доступных для воспроизведения."
-            )
-            return
-        
         added_count = 0
-        for i, entry in enumerate(valid_entries):
-            queue.append({
-                "title": entry.get("title", f"Track {i+1}"),
-                "playlist_url": search_query,
-                "playlist_index": i,
-                "lazy_load": True,
-                "loaded": False,
-                "requester": interaction.user.name,
-            })
-            added_count += 1
+        for i, entry in enumerate(entries_to_process):
+            if entry and entry.get("title"):
+                has_full_info = entry.get("url") and entry.get("webpage_url")
+                
+                track_data = {
+                    "title": entry.get("title", f"Track {i+1}"),
+                    "playlist_url": search_query,
+                    "playlist_index": i,
+                    "lazy_load": not has_full_info,
+                    "loaded": has_full_info,
+                    "preloading": False,
+                    "requester": interaction.user.name,
+                }
+                
+                if has_full_info:
+                    track_data.update({
+                        "url": entry.get("url", ""),
+                        "webpage_url": entry.get("webpage_url", ""),
+                        "thumbnail": entry.get("thumbnail", ""),
+                    })
+                
+                queue.append(track_data)
+                added_count += 1
+        
+        # Запускаем предзагрузку
+        lazy_tracks = [track for track in queue if track.get("lazy_load")]
+        if lazy_tracks:
+            asyncio.create_task(preload_manager.preload_tracks(interaction.guild.id, 3))
         
         try:
-            message_parts = []
-            message_parts.append(f"📃 **Добавлено {added_count} из {total_entries} треков**")
+            ready_count = sum(1 for track in queue[-added_count:] if track.get("loaded"))
+            message = f"📃 **Добавлено {added_count} из {total_entries} треков**\n"
             
-            if total_entries > max_to_add:
-                if remaining_slots < MAX_PLAYLIST_SIZE:
-                    message_parts.append(f"💡 Ограничено лимитом очереди: {remaining_slots} свободных мест")
-                else:
-                    message_parts.append(f"💡 Ограничено лимитом плейлиста: {MAX_PLAYLIST_SIZE} треков")
+            if ready_count > 0:
+                message += f"✅ {ready_count} треков готовы\n"
+            if added_count - ready_count > 0:
+                message += f"⏳ {added_count - ready_count} загружаются\n"
             
-            message_parts.append(f"📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE} треков")
+            message += f"📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE}"
             
-            await interaction.edit_original_response(content="\n".join(message_parts))
-            logger.info(f"✅ Плейлист добавлен: {added_count}/{total_entries} треков")
+            await interaction.edit_original_response(content=message)
         except:
             pass
-    elif info.get("title"):
-        if len(queue) >= MAX_QUEUE_SIZE:
-            await interaction.edit_original_response(
-                content=f"❌ **Очередь полная!** ({len(queue)}/{MAX_QUEUE_SIZE})"
-            )
-            return
             
+    elif info.get("title"):
+        # Одиночный трек
         track = {
             "title": info["title"],
             "url": info.get("url", ""),
@@ -697,25 +976,13 @@ async def play(interaction: discord.Interaction, query: str):
             "loaded": True,
         }
         queue.append(track)
-        logger.info(f"🎶 Добавлен трек: {track['title']}")
+        
         try:
             await interaction.edit_original_response(
-                content=f"🎶 **Добавлен трек:** {track['title']}\n"
-                        f"📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE} треков"
+                content=f"🎶 **Добавлен:** {track['title']}\n📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE}"
             )
         except:
             pass
-    else:
-        logger.error("❌ Неполные данные от yt-dlp")
-        try:
-            await interaction.edit_original_response(
-                content="❌ **Неполные данные**\n"
-                       "Получены неполные данные о треке.\n"
-                       "💡 Возможно видео недоступно или заблокировано."
-            )
-        except:
-            pass
-        return
 
     player_channels[interaction.guild.id] = interaction.channel
     await create_new_player(interaction.guild.id, interaction.channel)
@@ -724,7 +991,7 @@ async def play(interaction: discord.Interaction, query: str):
         await play_next(vc, interaction.guild.id)
 
 async def play_next(vc, guild_id):
-    """Воспроизвести следующий трек с обработкой ошибок соединения"""
+    """Воспроизвести следующий трек"""
     queue = get_queue(guild_id)
     if not queue:
         current_tracks[guild_id] = None
@@ -734,9 +1001,8 @@ async def play_next(vc, guild_id):
             await create_new_player(guild_id, channel)
         return
 
-    # Проверяем состояние voice client
     if not vc or not vc.is_connected():
-        logger.warning("⚠️ Voice client отключен, прекращаем воспроизведение")
+        logger.warning("⚠️ Voice client отключен")
         await cleanup_guild_data(guild_id)
         return
 
@@ -744,24 +1010,37 @@ async def play_next(vc, guild_id):
     current_tracks[guild_id] = next_track
     logger.info(f"⏭️ Следующий трек: {next_track['title']}")
     
-    # Ленивая загрузка
+    # Предзагрузка в фоне
+    if queue:
+        asyncio.create_task(preload_manager.preload_tracks(guild_id, 3))
+    
+    # Загружаем трек если нужно
     if next_track.get("lazy_load") and not next_track.get("loaded"):
         try:
-            logger.info(f"⏳ Загружаем полную информацию для: {next_track['title']}")
-            full_info = await load_track_from_playlist(
-                next_track["playlist_url"], 
-                next_track["playlist_index"]
-            )
-            next_track.update(full_info)
-            next_track["loaded"] = True
-            logger.info(f"✅ Загружена полная информация для: {next_track['title']}")
+            cache_key = f"track_full:{next_track['playlist_url']}:{next_track['playlist_index']}"
+            
+            cached_data = cache_manager.get(cache_key)
+            if cached_data:
+                next_track.update(cached_data)
+                next_track["loaded"] = True
+            else:
+                full_info = await preload_manager._load_track_metadata(
+                    next_track["playlist_url"], 
+                    next_track["playlist_index"]
+                )
+                
+                if full_info:
+                    cache_manager.set(cache_key, full_info, ttl=3600)
+                    next_track.update(full_info)
+                    next_track["loaded"] = True
+                else:
+                    raise Exception("Не удалось загрузить информацию о треке")
         except Exception as e:
-            logger.error(f"❌ Не удалось загрузить трек: {e}")
+            logger.error(f"❌ Ошибка загрузки трека: {e}")
             await play_next(vc, guild_id)
             return
     
     try:
-        # Получаем аудио URL с улучшенной обработкой
         if next_track.get("url"):
             audio_url = await get_audio_url(next_track["url"], next_track["title"])
         else:
@@ -774,25 +1053,17 @@ async def play_next(vc, guild_id):
         def after_play(error):
             if error:
                 logger.error(f"❌ Ошибка воспроизведения: {error}")
-                # Проверяем тип ошибки
-                error_str = str(error).lower()
-                if "4006" in error_str or "connection" in error_str:
-                    logger.error("🚨 Обнаружена ошибка соединения Discord voice (4006)")
-                    # Попытка переподключения будет в следующем цикле
             
-            # Планируем следующий трек только если voice client еще подключен
             if vc and vc.is_connected():
                 bot.loop.create_task(play_next(vc, guild_id))
             else:
-                logger.warning("⚠️ Voice client отключен, прекращаем цикл воспроизведения")
                 bot.loop.create_task(cleanup_guild_data(guild_id))
         
         vc.play(source, after=after_play)
         logger.info(f"🎵 Играет: {next_track['title']}")
         
     except Exception as e:
-        logger.error(f"❌ Ошибка воспроизведения {next_track['title']}: {str(e)}")
-        # Пробуем следующий трек
+        logger.error(f"❌ Ошибка воспроизведения: {e}")
         await play_next(vc, guild_id)
         return
     
@@ -803,166 +1074,87 @@ async def play_next(vc, guild_id):
 
 @tree.command(name="pause", description="Приостановить воспроизведение")
 async def pause(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/pause")
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        await interaction.response.send_message("⏸️ Воспроизведение приостановлено.", ephemeral=True)
-        await update_player_buttons(interaction.guild.id)
+        await interaction.response.send_message("⏸️ Пауза", ephemeral=True)
     else:
-        await interaction.response.send_message("❌ Сейчас ничего не играет.", ephemeral=True)
+        await interaction.response.send_message("❌ Ничего не играет", ephemeral=True)
 
 @tree.command(name="resume", description="Продолжить воспроизведение")
 async def resume(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/resume")
     vc = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        await interaction.response.send_message("▶️ Воспроизведение продолжено.", ephemeral=True)
-        await update_player_buttons(interaction.guild.id)
+        await interaction.response.send_message("▶️ Продолжаем", ephemeral=True)
     else:
-        await interaction.response.send_message("❌ Музыка не приостановлена.", ephemeral=True)
+        await interaction.response.send_message("❌ Музыка не на паузе", ephemeral=True)
 
-@tree.command(name="stop", description="Остановить воспроизведение и очистить очередь")
+@tree.command(name="stop", description="Остановить и отключиться")
 async def stop(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/stop")
     vc = interaction.guild.voice_client
     if vc:
         await interaction.response.send_message("⏹️ Останавливаем...", ephemeral=True)
         await safe_voice_disconnect(vc, interaction.guild.id)
     else:
-        await interaction.response.send_message("❌ Бот не подключен к голосовому каналу.", ephemeral=True)
+        await interaction.response.send_message("❌ Не подключен", ephemeral=True)
 
-@tree.command(name="skip", description="Пропустить текущую песню")
+@tree.command(name="skip", description="Пропустить трек")
 async def skip(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/skip")
     vc = interaction.guild.voice_client
     if vc and (vc.is_playing() or vc.is_paused()):
         vc.stop()
-        await interaction.response.send_message("⏭️ Трек пропущен.", ephemeral=True)
+        await interaction.response.send_message("⏭️ Скип", ephemeral=True)
     else:
-        await interaction.response.send_message("❌ Сейчас ничего не играет.", ephemeral=True)
+        await interaction.response.send_message("❌ Ничего не играет", ephemeral=True)
 
-@tree.command(name="queue", description="Показать текущую очередь")
+@tree.command(name="queue", description="Показать очередь")
 async def queue_cmd(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/queue")
     queue = get_queue(interaction.guild.id)
     
     if not queue:
-        await interaction.response.send_message(f"📭 **Очередь пуста** (0/{MAX_QUEUE_SIZE})", ephemeral=True)
+        await interaction.response.send_message(f"📭 Очередь пуста (0/{MAX_QUEUE_SIZE})", ephemeral=True)
         return
     
-    embed = discord.Embed(
-        title=f"📃 Очередь треков ({len(queue)}/{MAX_QUEUE_SIZE})",
-        color=0x2f3136
-    )
+    embed = discord.Embed(title=f"📃 Очередь ({len(queue)}/{MAX_QUEUE_SIZE})", color=0x2f3136)
     
     queue_text = ""
     for i, track in enumerate(queue[:10]):
-        status_icon = "⏳" if track.get("lazy_load") and not track.get("loaded") else "✅"
-        title_display = track['title'][:45] + ('...' if len(track['title']) > 45 else '')
-        queue_text += f"`{i+1}.` {status_icon} **{title_display}**\n*Заказал: {track['requester']}*\n\n"
+        status_icon = "🚀" if track.get("preloading") else ("⏳" if track.get("lazy_load") and not track.get("loaded") else "✅")
+        title = track['title'][:40] + ('...' if len(track['title']) > 40 else '')
+        queue_text += f"`{i+1}.` {status_icon} **{title}**\n"
     
     if len(queue) > 10:
         queue_text += f"*... и еще {len(queue) - 10} треков*"
     
     embed.description = queue_text
-    embed.set_footer(text=f"Всего треков в очереди: {len(queue)}/{MAX_QUEUE_SIZE}")
-    
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@tree.command(name="status", description="Показать статус бота и очереди")
-async def status(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/status")
-    queue = get_queue(interaction.guild.id)
-    vc = interaction.guild.voice_client
-    current_track = current_tracks.get(interaction.guild.id)
-    
-    embed = discord.Embed(
-        title="🤖 Статус бота",
-        color=0x2f3136
-    )
-    
-    # Статус подключения и воспроизведения
-    if vc and vc.is_connected():
-        channel_name = vc.channel.name
-        if vc.is_playing():
-            embed.add_field(name="🔊 Статус", value=f"🎵 Играет в канале: **{channel_name}**", inline=False)
-        elif vc.is_paused():
-            embed.add_field(name="🔊 Статус", value=f"⏸️ На паузе в канале: **{channel_name}**", inline=False)
-        else:
-            embed.add_field(name="🔊 Статус", value=f"⏹️ Подключен к каналу: **{channel_name}**", inline=False)
-    else:
-        embed.add_field(name="🔊 Статус", value="🔌 Не подключен к голосовому каналу", inline=False)
-    
-    # Текущий трек
-    if current_track:
-        embed.add_field(
-            name="🎵 Сейчас играет", 
-            value=f"**{current_track['title']}**\n*Заказал: {current_track['requester']}*", 
-            inline=False
-        )
-    
-    # Статистика очереди
-    embed.add_field(name="📊 Очередь", value=f"**{len(queue)}/{MAX_QUEUE_SIZE}** треков", inline=True)
-    embed.add_field(name="⚙️ Лимит плейлиста", value=f"**{MAX_PLAYLIST_SIZE}** треков", inline=True)
-    
-    # Статистика ленивой загрузки
-    if queue:
-        lazy_count = sum(1 for track in queue if track.get("lazy_load") and not track.get("loaded"))
-        if lazy_count > 0:
-            embed.add_field(name="⏳ К загрузке", value=f"**{lazy_count}** треков", inline=True)
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@tree.command(name="help", description="Показать справку по командам")
+@tree.command(name="help", description="Справка по командам")
 async def help_cmd(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/help")
-    
-    embed = discord.Embed(
-        title="📖 Команды бота",
-        description="Управляйте музыкой с помощью команд или кнопок плеера",
-        color=0x2f3136
-    )
-    
+    embed = discord.Embed(title="📖 Команды", color=0x2f3136)
     embed.add_field(
-        name="🎵 Основные команды",
-        value=(
-            "`/play <запрос>` — Воспроизвести трек\n"
-            "`/pause` — Приостановить\n"
-            "`/resume` — Продолжить\n"
-            "`/stop` — Остановить и отключиться\n"
-            "`/skip` — Пропустить трек\n"
-            "`/queue` — Показать очередь\n"
-            "`/status` — Статус бота"
-        ),
+        name="🎵 Команды",
+        value="`/play` - Воспроизвести\n`/pause` - Пауза\n`/resume` - Продолжить\n`/skip` - Скип\n`/stop` - Стоп\n`/queue` - Очередь",
         inline=False
     )
-    
     embed.add_field(
-        name="🎛️ Интерактивный плеер",
-        value=(
-            "⏸️/▶️ — Пауза/Воспроизведение\n"
-            "⏭️ — Пропустить трек\n"
-            "⏹️ — Остановить\n"
-            "📃 — Показать очередь"
-        ),
+        name="⚡ Особенности",
+        value=f"• Лимит очереди: {MAX_QUEUE_SIZE}\n• Лимит плейлиста: {MAX_PLAYLIST_SIZE}\n• Кэширование треков\n• Предзагрузка",
         inline=False
     )
-    
-    embed.add_field(
-        name="ℹ️ Лимиты и особенности",
-        value=(
-            f"📊 Максимум треков в очереди: **{MAX_QUEUE_SIZE}**\n"
-            f"📃 Максимум треков из плейлиста: **{MAX_PLAYLIST_SIZE}**\n"
-            "⚡ Быстрая загрузка плейлистов (Lazy Loading)\n"
-            "👤 Отображение заказчиков треков"
-        ),
-        inline=False
-    )
-    
-    embed.set_footer(text="💡 Все ответы команд видны только вам!")
-    
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-bot.run(TOKEN)
+# Запуск бота
+if __name__ == "__main__":
+    if not TOKEN:
+        logger.error("❌ DISCORD_TOKEN не найден в переменных окружения")
+        sys.exit(1)
+    
+    try:
+        bot.run(TOKEN)
+    except KeyboardInterrupt:
+        logger.info("👋 Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}")
+        sys.exit(1)

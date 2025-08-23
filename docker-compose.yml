@@ -1,17 +1,38 @@
 services:
   bot:
-    #image: ghcr.io/luxqw/vexel-music-bot:dev-latest
     container_name: vexel-music-bot
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
       - .env
-    environment:
-      - PYTHONUNBUFFERED=1  # ✅ ДОБАВИТЬ ЭТУ СТРОКУ 
     volumes:
-      - ./bot:/app/bot
-      - ./cookies:/app/cookies
+      - ./cookies:/app/cookies:ro  # Только чтение для cookies
+      - cache_data:/app/cache      # Именованный том для кэша
+      - logs_data:/app/logs        # Именованный том для логов
     working_dir: /app
     restart: unless-stopped
-    command: ["python3", "main.py"]
+    
+    # Ограничения ресурсов
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    # Настройки безопасности
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+
+# Именованные тома для постоянного хранения
+volumes:
+  cache_data:
+    driver: local
+  logs_data:
+    driver: local

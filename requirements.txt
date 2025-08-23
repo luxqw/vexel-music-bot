@@ -1,5 +1,4 @@
-discord.py[voice]
-PyNaCl
-yt_dlp
-pytube
-python-dotenv
+discord.py[voice]>=2.3.2
+PyNaCl>=1.5.0
+yt-dlp>=2023.12.30
+python-dotenv>=1.0.0
