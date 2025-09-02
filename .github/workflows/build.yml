@@ -12,6 +12,7 @@ jobs:
     permissions:
       contents: write # Needed to push git tags
       packages: write # Needed to push docker images to GHCR
+      actions: read   # Needed for checkout
 
     steps:
       - name: Checkout repository
@@ -25,8 +26,14 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} # Use the built-in GITHUB_TOKEN for simplicity and security
+          password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify Docker login
+        run: |
+          echo "Verifying Docker login..."
+          docker info
+          echo "Attempting to check GHCR access..."
+          
       - name: Create and Push New Version Tag
         id: version
         run: |
@@ -64,9 +71,9 @@ jobs:
           push: true
           # Define all tags in one block. Using github.sha_short is a clean way to get the short commit hash.
           tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.new_version }}
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:sha-${{ github.sha_short }}
+            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ steps.version.outputs.new_version }}
+            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
+            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:sha-${{ github.sha_short }}
 
       - name: Notify Discord of Build Status
         if: always() # This step runs even if previous steps fail
@@ -96,7 +103,7 @@ jobs:
               "fields": [
                 {
                   "name": "🐳 Docker Images",
-                  "value": "ghcr.io/${{ github.repository }}:${{ steps.version.outputs.new_version }}\nghcr.io/${{ github.repository }}:latest\nghcr.io/${{ github.repository }}:sha-${{ github.sha_short }}"
+                  "value": "ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ steps.version.outputs.new_version }}\nghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest\nghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:sha-${{ github.sha_short }}"
                 }
               ],
               "footer": {
