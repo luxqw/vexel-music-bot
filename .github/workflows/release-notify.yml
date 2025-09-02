@@ -7,38 +7,50 @@ on:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    # Только для dev релизов (теги начинающиеся с dev-v)
     if: startsWith(github.event.release.tag_name, 'dev-v')
 
     steps:
-      - name: Notify Discord about Release
+      - name: Send Discord Release Notification
         env:
-          DISCORD_WEBHOOK_DEV: ${{ secrets.DISCORD_WEBHOOK_DEV }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_DEV || secrets.DISCORD_WEBHOOK }}
         run: |
-          WEBHOOK_URL="${DISCORD_WEBHOOK_DEV:-${{ secrets.DISCORD_WEBHOOK }}}"
-          
+          RELEASE_NAME="${{ github.event.release.name }}"
+          TAG_NAME="${{ github.event.release.tag_name }}"
+          AUTHOR_LOGIN="${{ github.event.release.author.login }}"
+          RELEASE_URL="${{ github.event.release.html_url }}"
+          REPO_OWNER="${{ github.repository_owner }}"
+
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "New Dev Release Published!" \
+            --arg description "**Release Name:** $RELEASE_NAME\n**Tag:** `$TAG_NAME`\n**Author:** $AUTHOR_LOGIN\n**URL:** [View Release]($RELEASE_URL)" \
+            --arg url "$RELEASE_URL" \
+            --arg color 16776960 \
+            --arg thumbnail "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" \
+            --arg footer "Dev Environment • Release" \
+            --arg icon_url "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" \
+            --arg timestamp "${{ github.event.release.published_at }}" \
+            --arg docker_image "ghcr.io/$REPO_OWNER/vexel-music-bot:$TAG_NAME" \
+            '{
+              "embeds": [
+                {
+                  "title": $title,
+                  "description": $description,
+                  "url": $url,
+                  "color": ($color | tonumber),
+                  "thumbnail": { "url": $thumbnail },
+                  "footer": { "text": $footer, "icon_url": $icon_url },
+                  "timestamp": $timestamp,
+                  "fields": [
+                    {
+                      "name": "🐳 Docker Image",
+                      "value": "```\n" + $docker_image + "```",
+                      "inline": false
+                    }
+                  ]
+                }
+              ]
+            }')
+
           curl -H "Content-Type: application/json" \
-               -d "{
-                    \"embeds\": [{
-                        \"title\": \"New Release Published!\",
-                        \"description\": \"**Release Name:** ${{ github.event.release.name }}\\n**Tag:** \`${{ github.event.release.tag_name }}\`\\n**Author:** ${{ github.event.release.author.login }}\\n**Release URL:** [View Release](${{ github.event.release.html_url }})\",
-                        \"url\": \"${{ github.event.release.html_url }}\",
-                        \"color\": 16776960,
-                        \"thumbnail\": {
-                            \"url\": \"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\"
-                        },
-                        \"footer\": {
-                            \"text\": \"Dev Environment • Release\",
-                            \"icon_url\": \"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png\"
-                        },
-                        \"timestamp\": \"${{ github.event.release.published_at }}\",
-                        \"fields\": [
-                            {
-                                \"name\": \"🐳 Docker Image\",
-                                \"value\": \"\`\`\`\\nghcr.io/${{ github.repository_owner }}/vexel-music-bot:${{ github.event.release.tag_name }}\`\`\`\",
-                                \"inline\": false
-                            }
-                        ]
-                    }]
-                }" \
-               $WEBHOOK_URL
+               -d "$JSON_PAYLOAD" \
+               $DISCORD_WEBHOOK_URL
