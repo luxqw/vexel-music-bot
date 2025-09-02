@@ -1,23 +1,23 @@
-name: Docker Image Build & Push
+# A more descriptive name for the main branch CI
+name: Main Docker Image CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ] # Triggered on pushes to the main branch
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Docker image tag (e.g., v1.1.0)'
-        required: false
-        default: ''
 
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to push git tags
+      packages: write # Needed to push docker images to GHCR
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          # Fetch all history for all branches and tags
           fetch-depth: 0
 
       - name: Log in to GitHub Container Registry
@@ -25,65 +25,85 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Use the built-in GITHUB_TOKEN for simplicity and security
 
-      - name: Build and push Docker image
-        id: build_push
+      - name: Create and Push New Version Tag
+        id: version
+        run: |
+          # Configure git user
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Get the latest tag, filter for standard v*.*.* versions
+          latest_tag=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+
+          # If no tags exist, start from v1.0.0; otherwise, increment the patch version
+          if [[ -z "$latest_tag" ]]; then
+            new_version="v1.0.0"
+          else
+            # Strip 'v' prefix, split into parts, and increment patch
+            version_number="${latest_tag#v}"
+            IFS='.' read -r major minor patch <<<"$version_number"
+            patch=$((patch+1))
+            new_version="v$major.$minor.$patch"
+          fi
+          
+          echo "New version: $new_version"
+          
+          # Create and push the new tag
+          git tag "$new_version"
+          git push origin "$new_version"
+          
+          # Set the new version as an output for subsequent steps
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+
+      - name: Build and Push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: >
-            ghcr.io/${{ github.repository_owner }}/vexel-music-bot:${{ github.event.release.tag_name || github.event.inputs.tag || github.sha }}
-            ghcr.io/${{ github.repository_owner }}/vexel-music-bot:latest
+          # Define all tags in one block. Using github.sha_short is a clean way to get the short commit hash.
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.new_version }}
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:sha-${{ github.sha_short }}
 
-      - name: Notify Discord
-        if: always()
+      - name: Notify Discord of Build Status
+        if: always() # This step runs even if previous steps fail
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_DEV || secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
+          BUILD_STATUS: ${{ job.status }}
         run: |
-          if [[ "${{ job.status }}" == "success" ]]; then
-            STATUS_MSG="✅ Build Completed Successfully!"
-            COLOR=3066993
+          if [[ "$BUILD_STATUS" == "success" ]]; then
+            TITLE="🚀 Production Build Successful!"
+            COLOR=3066993 # Green
           else
-            STATUS_MSG="❌ Build Failed!"
-            COLOR=16711680
+            TITLE="💥 Production Build Failed!"
+            COLOR=16711680 # Red
           fi
+
+          # The commit message is escaped to be safely embedded in JSON
+          COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n1 | sed 's/"/\\"/g' | sed "s/'/\\\'/g")
           
-          TAG_NAME="${{ github.event.release.tag_name || github.event.inputs.tag || 'undefined' }}"
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n1 | sed 's/"/\\"/g')
-          
-          JSON_PAYLOAD=$(jq -n \
-            --arg title "$STATUS_MSG" \
-            --arg color "$COLOR" \
-            --arg description "**Tag:** `$TAG_NAME`\n**Commit:** [\`$SHORT_SHA\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})\n**Message:** $COMMIT_MSG" \
-            --arg url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --arg footer "GitHub Actions" \
-            --arg icon_url "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" \
-            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-            --arg new_tag "$TAG_NAME" \
-            --arg repo_owner "${{ github.repository_owner }}" \
-            '{
-              "embeds": [
+          # Send a nicely formatted embed to Discord using a heredoc for readability
+          curl -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK_URL" <<EOF
+          {
+            "embeds": [{
+              "title": "$TITLE",
+              "description": "**Branch:** \`main\`\n**Tag:** \`${{ steps.version.outputs.new_version }}\`\n**Commit:** [\`${{ github.sha_short }}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})\n**Message:** ${COMMIT_MSG}",
+              "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+              "color": $COLOR,
+              "fields": [
                 {
-                  "title": $title,
-                  "description": $description,
-                  "url": $url,
-                  "color": ($color | tonumber),
-                  "footer": { "text": $footer, "icon_url": $icon_url },
-                  "timestamp": $timestamp,
-                  "fields": [
-                    {
-                      "name": "🐳 Docker Images",
-                      "value": "```\nghcr.io/" + $repo_owner + "/vexel-music-bot:" + $new_tag + "\nghcr.io/" + $repo_owner + "/vexel-music-bot:latest\n```",
-                      "inline": false
-                    }
-                  ]
+                  "name": "🐳 Docker Images",
+                  "value": "ghcr.io/${{ github.repository }}:${{ steps.version.outputs.new_version }}\nghcr.io/${{ github.repository }}:latest\nghcr.io/${{ github.repository }}:sha-${{ github.sha_short }}"
                 }
-              ]
-            }')
-          
-          curl -H "Content-Type: application/json" \
-               -d "$JSON_PAYLOAD" \
-               $DISCORD_WEBHOOK_URL
+              ],
+              "footer": {
+                "text": "Production Environment • GitHub Actions",
+                "icon_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+              },
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+            }]
+          }
+          EOF
