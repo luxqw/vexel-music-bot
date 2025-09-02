@@ -1,50 +1,69 @@
-name: Production Release
+name: Docker Image Build & Push
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Docker image tag (e.g., v1.1.0)'
+        required: false
+        default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    if: "!startsWith(github.event.release.tag_name, 'dev-v')"
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+        with:
+          fetch-depth: 0
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT }}
-          
+
       - name: Build and push Docker image
+        id: build_push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/vexel-music-bot:${{ github.event.release.tag_name }}
-          
+          tags: >
+            ghcr.io/${{ github.repository_owner }}/vexel-music-bot:${{ github.event.release.tag_name || github.event.inputs.tag || github.sha }}
+            ghcr.io/${{ github.repository_owner }}/vexel-music-bot:latest
+
       - name: Notify Discord
+        if: always()
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_PROD || secrets.DISCORD_WEBHOOK }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_DEV || secrets.DISCORD_WEBHOOK }}
         run: |
-          TAG_NAME="${{ github.event.release.tag_name }}"
-          RELEASE_URL="${{ github.event.release.html_url }}"
-          REPO_OWNER="${{ github.repository_owner }}"
+          if [[ "${{ job.status }}" == "success" ]]; then
+            STATUS_MSG="✅ Build Completed Successfully!"
+            COLOR=3066993
+          else
+            STATUS_MSG="❌ Build Failed!"
+            COLOR=16711680
+          fi
+          
+          TAG_NAME="${{ github.event.release.tag_name || github.event.inputs.tag || 'undefined' }}"
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n1 | sed 's/"/\\"/g')
           
           JSON_PAYLOAD=$(jq -n \
-            --arg title "🚀 New Production Release!" \
-            --arg color 3066993 \
-            --arg description "**Tag:** `$TAG_NAME`\n**URL:** [View Release]($RELEASE_URL)" \
-            --arg url "$RELEASE_URL" \
-            --arg footer "Production • GitHub Actions" \
+            --arg title "$STATUS_MSG" \
+            --arg color "$COLOR" \
+            --arg description "**Tag:** `$TAG_NAME`\n**Commit:** [\`$SHORT_SHA\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})\n**Message:** $COMMIT_MSG" \
+            --arg url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg footer "GitHub Actions" \
             --arg icon_url "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" \
             --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-            --arg docker_image "ghcr.io/$REPO_OWNER/vexel-music-bot:$TAG_NAME" \
+            --arg new_tag "$TAG_NAME" \
+            --arg repo_owner "${{ github.repository_owner }}" \
             '{
               "embeds": [
                 {
@@ -56,8 +75,8 @@ jobs:
                   "timestamp": $timestamp,
                   "fields": [
                     {
-                      "name": "🐳 Docker Image",
-                      "value": "```\n" + $docker_image + "```",
+                      "name": "🐳 Docker Images",
+                      "value": "```\nghcr.io/" + $repo_owner + "/vexel-music-bot:" + $new_tag + "\nghcr.io/" + $repo_owner + "/vexel-music-bot:latest\n```",
                       "inline": false
                     }
                   ]
