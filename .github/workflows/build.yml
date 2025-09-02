@@ -3,7 +3,7 @@ name: Production Release
 on:
   release:
     types: [published]
-  workflow_dispatch:  # Добавляет кнопку "Run workflow"
+  workflow_dispatch:
 
 jobs:
   build:
