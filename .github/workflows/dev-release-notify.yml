@@ -1,4 +1,4 @@
-name: Dev Release Notify
+name: Release Notify
 
 on:
   release:
@@ -11,7 +11,7 @@ jobs:
     if: startsWith(github.event.release.tag_name, 'dev-v')
 
     steps:
-      - name: Notify Discord about Dev Release
+      - name: Notify Discord about Release
         env:
           DISCORD_WEBHOOK_DEV: ${{ secrets.DISCORD_WEBHOOK_DEV }}
         run: |
@@ -20,7 +20,7 @@ jobs:
           curl -H "Content-Type: application/json" \
                -d "{
                     \"embeds\": [{
-                        \"title\": \"🧪 New Dev Release Published!\",
+                        \"title\": \"New Release Published!\",
                         \"description\": \"**Release Name:** ${{ github.event.release.name }}\\n**Tag:** \`${{ github.event.release.tag_name }}\`\\n**Author:** ${{ github.event.release.author.login }}\\n**Release URL:** [View Release](${{ github.event.release.html_url }})\",
                         \"url\": \"${{ github.event.release.html_url }}\",
                         \"color\": 16776960,
