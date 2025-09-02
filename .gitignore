@@ -1,7 +1,5 @@
 .env
 .env.dev
-.env.local
-.env.*.local
 
 # Logs
 logs/
