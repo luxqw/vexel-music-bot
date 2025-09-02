@@ -32,5 +32,4 @@ docker-compose.override.yml
 
 .env
 cookies/
-temp_cookies/
 *.txt
