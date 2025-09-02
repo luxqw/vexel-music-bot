@@ -1,51 +1,44 @@
+# A clear name for the production release notification workflow
 name: Production Release Notify
 
 on:
   release:
-    types: [published]
+    types: [published] # This workflow runs when a new release is published
 
 jobs:
   notify:
     runs-on: ubuntu-latest
-    
+    # This condition ensures the job only runs for final releases, not pre-releases.
+    if: github.event.release.prerelease == false
+
     steps:
-      - name: Send Discord Production Release Notification
+      - name: Notify Discord about New Release
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_PROD || secrets.DISCORD_WEBHOOK }}
+          # Directly use the production webhook secret
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          TAG_NAME="${{ github.event.release.tag_name }}"
-          RELEASE_URL="${{ github.event.release.html_url }}"
-          REPO_OWNER="${{ github.repository_owner }}"
+          # The release body is fetched and escaped to be safely embedded in JSON
+          RELEASE_BODY=$(echo "${{ github.event.release.body }}" | sed 's/"/\\"/g' | sed 's/$/\\n/g' | tr -d '\n')
           
-          JSON_PAYLOAD=$(jq -n \
-            --arg title "🚀 New Production Release!" \
-            --arg description "**Tag:** `$TAG_NAME`\n**URL:** [View Release]($RELEASE_URL)" \
-            --arg url "$RELEASE_URL" \
-            --arg color 3066993 \
-            --arg footer "Production • Release" \
-            --arg icon_url "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" \
-            --arg timestamp "${{ github.event.release.published_at }}" \
-            --arg docker_image "ghcr.io/$REPO_OWNER/vexel-music-bot:$TAG_NAME" \
-            '{
-              "embeds": [
+          # Send a notification using a heredoc for better readability of the JSON payload
+          curl -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK_URL" <<EOF
+          {
+            "embeds": [{
+              "title": "🎉 New Production Release Published!",
+              "description": "**Release:** [${{ github.event.release.name }}](${{ github.event.release.html_url }})\n**Tag:** \`${{ github.event.release.tag_name }}\`\n**Author:** ${{ github.event.release.author.login }}\n\n${RELEASE_BODY}",
+              "url": "${{ github.event.release.html_url }}",
+              "color": 5814783,
+              "fields": [
                 {
-                  "title": $title,
-                  "description": $description,
-                  "url": $url,
-                  "color": ($color | tonumber),
-                  "footer": { "text": $footer, "icon_url": $icon_url },
-                  "timestamp": $timestamp,
-                  "fields": [
-                    {
-                      "name": "🐳 Docker Image",
-                      "value": "```\n" + $docker_image + "```",
-                      "inline": false
-                    }
-                  ]
+                  "name": "🐳 Docker Images",
+                  "value": "ghcr.io/${{ github.repository }}:${{ github.event.release.tag_name }}\nghcr.io/${{ github.repository }}:latest"
                 }
-              ]
-            }')
-          
-          curl -H "Content-Type: application/json" \
-               -d "$JSON_PAYLOAD" \
-               $DISCORD_WEBHOOK_URL
+              ],
+              "footer": {
+                "text": "Production Environment • New Release",
+                "icon_url": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+              },
+              "timestamp": "${{ github.event.release.published_at }}"
+            }]
+          }
+          EOF
