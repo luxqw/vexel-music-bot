@@ -1,8 +1,8 @@
-name: Dev Docker Image CI
+name: Docker Image CI
 
 on:
   push:
-    branches: [ dev ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Нужно для работы с git-тегами
+          fetch-depth: 0  
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -24,10 +24,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT }}
 
-      - name: Get latest dev version tag
+      - name: Get latest version tag
         id: get_version
         run: |
-          latest_tag=$(git tag --list 'dev-v*' | sort -V | tail -n1)
+          latest_tag=$(git tag --list 'main*' | sort -V | tail -n1)
           if [[ -z "$latest_tag" ]]; then
             latest_tag="dev-v1.0.0"
           fi
@@ -37,7 +37,6 @@ jobs:
         id: bump_version
         run: |
           old_version="${{ steps.get_version.outputs.latest_tag }}"
-          # Убираем префикс dev-v
           version_number="${old_version#dev-v}"
           IFS='.' read -r major minor patch <<<"$version_number"
           patch=$((patch+1))
@@ -51,21 +50,18 @@ jobs:
       - name: Build and push Docker image
         id: build_push
         run: |
-          # ИСПРАВЛЕНИЕ: Используем тот же репозиторий что и main
           IMAGE=ghcr.io/${{ github.repository_owner }}/vexel-music-bot
           SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
           
-          # Собираем с dev тегами в том же репозитории
           docker build -t $IMAGE:${{ steps.bump_version.outputs.new_version }} \
-                       -t $IMAGE:dev-latest \
-                       -t $IMAGE:dev-$SHORT_SHA .
+                       -t $IMAGE:latest \
+                       -t $IMAGE:$SHORT_SHA .
           
-          # Пушим все dev теги
           docker push $IMAGE:${{ steps.bump_version.outputs.new_version }}
-          docker push $IMAGE:dev-latest
-          docker push $IMAGE:dev-$SHORT_SHA
+          docker push $IMAGE:latest
+          docker push $IMAGE:$SHORT_SHA
           
-          echo "image_tags=$IMAGE:${{ steps.bump_version.outputs.new_version }}, $IMAGE:dev-latest, $IMAGE:dev-$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "image_tags=$IMAGE:${{ steps.bump_version.outputs.new_version }}, $IMAGE:latest, $IMAGE:$SHORT_SHA" >> $GITHUB_OUTPUT
 
       - name: Notify Discord
         if: always()
@@ -73,20 +69,20 @@ jobs:
           DISCORD_WEBHOOK_DEV: ${{ secrets.DISCORD_WEBHOOK_DEV }}
         run: |
           STATUS_MSG=""
-          COLOR=16711680  # Red by default
+          COLOR=16711680  
           SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
           COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n1 | sed 's/"/\\"/g')
           
           if [[ "${{ job.status }}" == "success" ]]; then
-            STATUS_MSG="🚀 Dev Build Completed Successfully!"
+            STATUS_MSG="🚀 Build Completed Successfully!"
             COLOR=3066993  # Green for success
             EMOJI="✅"
           else
-            STATUS_MSG="💥 Dev Build Failed!"
+            STATUS_MSG="💥 Build Failed!"
             EMOJI="❌"
           fi
 
-          # Используем dev webhook если есть, иначе основной
+
           WEBHOOK_URL="${DISCORD_WEBHOOK_DEV:-${{ secrets.DISCORD_WEBHOOK }}}"
           
           curl -H "Content-Type: application/json" \
