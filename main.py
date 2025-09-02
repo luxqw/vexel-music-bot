@@ -387,7 +387,7 @@ async def safe_voice_disconnect(vc, guild_id):
 
 async def cleanup_guild_data(guild_id):
     try:
-        await delete_old_player(guild_id)
+        await delete_old_player(guild_id)  # <--- теперь всегда удаляем плеер при выходе
         player_channels.pop(guild_id, None)
         current_tracks.pop(guild_id, None)
         queues.pop(guild_id, None)
@@ -456,7 +456,6 @@ def _extract_info_with_cache(search_query):
         if info and "entries" in info and info["entries"]:
             opts_full = get_ytdl_opts(extract_flat=False)
             
-            # Убрал лишние сообщения - загружаем только первый трек
             for i in range(min(3, len(info["entries"]))):
                 entry = info["entries"][i]
                 if entry and entry.get("url"):
@@ -489,75 +488,79 @@ class MusicPlayerView(discord.ui.View):
     def __init__(self, guild_id):
         super().__init__(timeout=None)
         self.guild_id = guild_id
-    
+
     @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary, custom_id="pause_resume")
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-            
             vc = interaction.guild.voice_client
             if not vc:
                 await interaction.followup.send("❌ Не подключен.", ephemeral=True)
                 return
-            
             if vc.is_playing():
                 vc.pause()
                 await interaction.followup.send("⏸️ Пауза", ephemeral=True)
             elif vc.is_paused():
                 vc.resume()
-                await interaction.followup.send("▶️ Продолжаем", ephemeral=True)
+                await interaction.followup.send("▶️ Возобновлено", ephemeral=True)
             else:
                 await interaction.followup.send("❌ Ничего не играет.", ephemeral=True)
-            
         except Exception as e:
             logger.error(f"❌ Ошибка pause/resume: {e}")
-    
-    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="skip")
-    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, custom_id="resume")
+    async def resume_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-            
-            vc = interaction.guild.voice_client
-            if not vc or not (vc.is_playing() or vc.is_paused()):
-                await interaction.followup.send("❌ Ничего не играет.", ephemeral=True)
-                return
-            
-            vc.stop()
-            await interaction.followup.send("⏭️ Скип", ephemeral=True)
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка skip: {e}")
-    
-    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="stop")
-    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.response.defer(ephemeral=True)
-            
             vc = interaction.guild.voice_client
             if not vc:
                 await interaction.followup.send("❌ Не подключен.", ephemeral=True)
                 return
-            
+            if vc.is_paused():
+                vc.resume()
+                await interaction.followup.send("▶️ Возобновлено", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Не на паузе.", ephemeral=True)
+        except Exception as e:
+            logger.error(f"❌ Ошибка resume: {e}")
+
+    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="skip")
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+            vc = interaction.guild.voice_client
+            if not vc or not (vc.is_playing() or vc.is_paused()):
+                await interaction.followup.send("❌ Ничего не играет.", ephemeral=True)
+                return
+            vc.stop()
+            await interaction.followup.send("⏭️ Скип", ephemeral=True)
+        except Exception as e:
+            logger.error(f"❌ Ошибка skip: {e}")
+
+    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="stop")
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+            vc = interaction.guild.voice_client
+            if not vc:
+                await interaction.followup.send("❌ Не подключен.", ephemeral=True)
+                return
             await interaction.followup.send("⏹️ Останавливаем...", ephemeral=True)
             await safe_voice_disconnect(vc, interaction.guild.id)
-            
         except Exception as e:
             logger.error(f"❌ Ошибка stop: {e}")
-    
+
     @discord.ui.button(emoji="📃", style=discord.ButtonStyle.secondary, custom_id="queue")
     async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             queue = get_queue(interaction.guild.id)
-            
             if not queue:
                 await interaction.response.send_message(f"📭 **Очередь пуста** (0/{MAX_QUEUE_SIZE})", ephemeral=True)
                 return
-            
             embed = discord.Embed(
                 title=f"📃 Очередь треков ({len(queue)}/{MAX_QUEUE_SIZE})",
                 color=0x2f3136
             )
-            
             queue_text = ""
             for i, track in enumerate(queue[:10]):
                 if track.get("preloading"):
@@ -566,18 +569,13 @@ class MusicPlayerView(discord.ui.View):
                     status_icon = "⏳"
                 else:
                     status_icon = "✅"
-                
                 title_display = track['title'][:45] + ('...' if len(track['title']) > 45 else '')
                 queue_text += f"`{i+1}.` {status_icon} **{title_display}**\n*{track['requester']}*\n\n"
-            
             if len(queue) > 10:
                 queue_text += f"*... и еще {len(queue) - 10} треков*"
-            
             embed.description = queue_text
             embed.set_footer(text=f"✅ Готов | 🚀 Загружается | ⏳ Ожидает")
-            
             await interaction.response.send_message(embed=embed, ephemeral=True)
-            
         except Exception as e:
             logger.error(f"❌ Ошибка show_queue: {e}")
 
@@ -788,7 +786,6 @@ async def play(interaction: discord.Interaction, query: str):
                 queue.append(track_data)
                 added_count += 1
         
-        # ✅ ИСПРАВЛЕНО: добавлен await
         lazy_tracks = [track for track in queue if track.get("lazy_load")]
         if lazy_tracks:
             asyncio.create_task(preload_manager.preload_tracks(interaction.guild.id, 5))
@@ -860,7 +857,6 @@ async def play_next(vc, guild_id):
             current_tracks[guild_id] = next_track
             logger.info(f"⏭️ Следующий: {next_track['title']}")
             
-            # ✅ ИСПРАВЛЕНО: добавлен await через create_task
             remaining_lazy = [track for track in queue if track.get("lazy_load")]
             if remaining_lazy:
                 asyncio.create_task(preload_manager.preload_tracks(guild_id, 3))
