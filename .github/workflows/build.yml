@@ -3,6 +3,7 @@ name: Production Release
 on:
   release:
     types: [published]
+  workflow_dispatch:  # Добавляет кнопку "Run workflow"
 
 jobs:
   build:
@@ -12,7 +13,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+      
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -31,7 +32,6 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_PROD || secrets.DISCORD_WEBHOOK }}
         run: |
-          RELEASE_NAME="${{ github.event.release.name }}"
           TAG_NAME="${{ github.event.release.tag_name }}"
           RELEASE_URL="${{ github.event.release.html_url }}"
           REPO_OWNER="${{ github.repository_owner }}"
@@ -39,7 +39,7 @@ jobs:
           JSON_PAYLOAD=$(jq -n \
             --arg title "🚀 New Production Release!" \
             --arg color 3066993 \
-            --arg description "**Release Name:** $RELEASE_NAME\n**Tag:** `$TAG_NAME`\n**URL:** [View Release]($RELEASE_URL)" \
+            --arg description "**Tag:** `$TAG_NAME`\n**URL:** [View Release]($RELEASE_URL)" \
             --arg url "$RELEASE_URL" \
             --arg footer "Production • GitHub Actions" \
             --arg icon_url "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" \
