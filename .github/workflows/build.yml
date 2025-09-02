@@ -1,54 +1,53 @@
-# A more descriptive name for the main branch CI
 name: Main Docker Image CI
 
 on:
   push:
-    branches: [ main ] # Triggered on pushes to the main branch
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Needed to push git tags
-      packages: write # Needed to push docker images to GHCR
-      actions: read   # Needed for checkout
+      contents: write
+      packages: write
+      actions: read
+      id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Fetch all history for all branches and tags
           fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: luxqw
+          password: ${{ secrets.GHCR_TOKEN }}
 
-      - name: Verify Docker login
+      - name: Debug Info
         run: |
-          echo "Verifying Docker login..."
-          docker info
-          echo "Attempting to check GHCR access..."
-          
+          echo "Repository: ${{ github.repository }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Owner: ${{ github.repository_owner }}"
+          echo "Repo name: ${{ github.event.repository.name }}"
+
       - name: Create and Push New Version Tag
         id: version
         run: |
-          # Configure git user
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Get the latest tag, filter for standard v*.*.* versions
           latest_tag=$(git tag --list 'v*' --sort=-v:refname | head -n1)
 
-          # If no tags exist, start from v1.0.0; otherwise, increment the patch version
           if [[ -z "$latest_tag" ]]; then
             new_version="v1.0.0"
           else
-            # Strip 'v' prefix, split into parts, and increment patch
             version_number="${latest_tag#v}"
             IFS='.' read -r major minor patch <<<"$version_number"
             patch=$((patch+1))
@@ -57,11 +56,9 @@ jobs:
           
           echo "New version: $new_version"
           
-          # Create and push the new tag
           git tag "$new_version"
           git push origin "$new_version"
           
-          # Set the new version as an output for subsequent steps
           echo "new_version=$new_version" >> $GITHUB_OUTPUT
 
       - name: Build and Push Docker image
@@ -69,41 +66,43 @@ jobs:
         with:
           context: .
           push: true
-          # Define all tags in one block. Using github.sha_short is a clean way to get the short commit hash.
           tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ steps.version.outputs.new_version }}
-            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
-            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:sha-${{ github.sha_short }}
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.new_version }}
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
 
       - name: Notify Discord of Build Status
-        if: always() # This step runs even if previous steps fail
+        if: always()
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK }}
           BUILD_STATUS: ${{ job.status }}
         run: |
           if [[ "$BUILD_STATUS" == "success" ]]; then
             TITLE="🚀 Production Build Successful!"
-            COLOR=3066993 # Green
+            COLOR=3066993
           else
             TITLE="💥 Production Build Failed!"
-            COLOR=16711680 # Red
+            COLOR=16711680
           fi
 
-          # The commit message is escaped to be safely embedded in JSON
           COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n1 | sed 's/"/\\"/g' | sed "s/'/\\\'/g")
+          SHORT_SHA=${GITHUB_SHA:0:7}
           
-          # Send a nicely formatted embed to Discord using a heredoc for readability
           curl -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK_URL" <<EOF
           {
             "embeds": [{
               "title": "$TITLE",
-              "description": "**Branch:** \`main\`\n**Tag:** \`${{ steps.version.outputs.new_version }}\`\n**Commit:** [\`${{ github.sha_short }}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})\n**Message:** ${COMMIT_MSG}",
+              "description": "**Branch:** \`main\`\n**Tag:** \`${{ steps.version.outputs.new_version }}\`\n**Commit:** [\`${SHORT_SHA}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})\n**Message:** ${COMMIT_MSG}",
               "url": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}",
               "color": $COLOR,
               "fields": [
                 {
                   "name": "🐳 Docker Images",
-                  "value": "ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ steps.version.outputs.new_version }}\nghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest\nghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:sha-${{ github.sha_short }}"
+                  "value": "ghcr.io/${{ github.repository }}:${{ steps.version.outputs.new_version }}\nghcr.io/${{ github.repository }}:latest\nghcr.io/${{ github.repository }}:sha-${SHORT_SHA}"
                 }
               ],
               "footer": {
