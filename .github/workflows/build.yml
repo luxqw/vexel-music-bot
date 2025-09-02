@@ -1,51 +1,70 @@
-name: Docker Image CI
+name: Production Release
 
 on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch:
+  release:
+    types: [published]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: "!startsWith(github.event.release.tag_name, 'dev-v')"
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Fetches all history for tags
-
+        
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PAT }}
-
-      - name: Get and bump version tag
-        id: versioning
-        run: |
-          latest_tag=$(git tag --list 'v1.1.*' | sort -V | tail -n1)
           
-          if [[ -z "$latest_tag" ]]; then
-            new_version="v1.1.0"
-          else
-            IFS='.' read -r major minor patch <<<"${latest_tag#v}"
-            patch=$((patch+1))
-            new_version="v$major.$minor.$patch"
-          fi
-          
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$new_version"
-          git push origin "$new_version"
-          
-          echo "new_version=$new_version" >> $GITHUB_OUTPUT
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/vexel-music-bot:${{ steps.versioning.outputs.new_version }}
-            ghcr.io/${{ github.repository_owner }}/vexel-music-bot:latest
+          tags: ghcr.io/${{ github.repository_owner }}/vexel-music-bot:${{ github.event.release.tag_name }}
+          
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_PROD || secrets.DISCORD_WEBHOOK }}
+        run: |
+          RELEASE_NAME="${{ github.event.release.name }}"
+          TAG_NAME="${{ github.event.release.tag_name }}"
+          RELEASE_URL="${{ github.event.release.html_url }}"
+          REPO_OWNER="${{ github.repository_owner }}"
+          
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "🚀 New Production Release!" \
+            --arg color 3066993 \
+            --arg description "**Release Name:** $RELEASE_NAME\n**Tag:** `$TAG_NAME`\n**URL:** [View Release]($RELEASE_URL)" \
+            --arg url "$RELEASE_URL" \
+            --arg footer "Production • GitHub Actions" \
+            --arg icon_url "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --arg docker_image "ghcr.io/$REPO_OWNER/vexel-music-bot:$TAG_NAME" \
+            '{
+              "embeds": [
+                {
+                  "title": $title,
+                  "description": $description,
+                  "url": $url,
+                  "color": ($color | tonumber),
+                  "footer": { "text": $footer, "icon_url": $icon_url },
+                  "timestamp": $timestamp,
+                  "fields": [
+                    {
+                      "name": "🐳 Docker Image",
+                      "value": "```\n" + $docker_image + "```",
+                      "inline": false
+                    }
+                  ]
+                }
+              ]
+            }')
+          
+          curl -H "Content-Type: application/json" \
+               -d "$JSON_PAYLOAD" \
+               $DISCORD_WEBHOOK_URL
