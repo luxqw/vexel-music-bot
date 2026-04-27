@@ -7,7 +7,6 @@ import re
 import sqlite3
 import json
 import time
-import random
 import threading
 import urllib.parse
 from discord.ext import commands
@@ -50,7 +49,6 @@ queues = {}
 player_messages = {}
 current_tracks = {}
 player_channels = {}
-track_history = {}
 play_next_locks = {}
 loop_modes: dict = {}       # guild_id -> "off" | "track" | "queue"
 auto_paused_guilds: set = set()  # guilds where bot auto-paused due to empty channel
@@ -397,16 +395,6 @@ def log_command(user, command):
 def get_queue(guild_id):
     return queues.setdefault(guild_id, [])
 
-def get_history(guild_id):
-    return track_history.setdefault(guild_id, [])
-
-def add_to_history(guild_id, track):
-    history = get_history(guild_id)
-    history_track = track.copy()
-    history.append(history_track)
-    if len(history) > 20:
-        history.pop(0)
-
 def get_play_lock(guild_id):
     if guild_id not in play_next_locks:
         play_next_locks[guild_id] = asyncio.Lock()
@@ -452,10 +440,7 @@ async def safe_voice_connect(channel, max_retries=3):
                 # and kills the new one with 4006.
                 await asyncio.sleep(1.0)
 
-            # First attempt gets a longer budget — Discord takes time to spin up a
-            # voice server for a guild that has no active session yet.
-            timeout = 20.0 if attempt == 0 else 10.0
-            vc = await channel.connect(timeout=timeout, reconnect=False)
+            vc = await channel.connect(timeout=5.0, reconnect=False)
             logger.info(f"✅ Подключен к {channel.name}")
             return vc
 
@@ -500,7 +485,6 @@ async def cleanup_guild_data(guild_id):
         task = alone_tasks.pop(guild_id, None)
         if task and not task.done():
             task.cancel()
-        # track_history is intentionally preserved across sessions
         logger.info("🧹 Данные очищены")
     except Exception as e:
         logger.error(f"❌ Ошибка очистки: {e}")
@@ -648,8 +632,8 @@ class MusicPlayerView(discord.ui.View):
         try:
             await interaction.response.defer(ephemeral=True)
             vc = interaction.guild.voice_client
-            if not vc:
-                await interaction.followup.send("❌ Не подключен.", ephemeral=True)
+            if not vc or not vc.is_connected():
+                await interaction.followup.send("⚠️ Бот не подключён. Используйте `/play`.", ephemeral=True)
                 return
             if vc.is_playing():
                 vc.pause()
@@ -697,8 +681,8 @@ class MusicPlayerView(discord.ui.View):
         try:
             await interaction.response.defer(ephemeral=True)
             vc = interaction.guild.voice_client
-            if not vc:
-                await interaction.followup.send("❌ Не подключен.", ephemeral=True)
+            if not vc or not vc.is_connected():
+                await interaction.followup.send("⚠️ Бот не подключён. Используйте `/play`.", ephemeral=True)
                 return
             await interaction.followup.send("⏹️ Останавливаем...", ephemeral=True)
             await safe_voice_disconnect(vc, interaction.guild.id)
@@ -741,7 +725,6 @@ class MusicPlayerView(discord.ui.View):
 def create_player_embed(guild_id):
     current_track = current_tracks.get(guild_id)
     queue = get_queue(guild_id)
-    history = get_history(guild_id)
     vc = next((v for v in bot.voice_clients if v.guild.id == guild_id), None)
 
     if current_track:
@@ -770,29 +753,19 @@ def create_player_embed(guild_id):
             )
 
         loop_mode = loop_modes.get(guild_id, "off")
-        footer_parts = []
         if loop_mode == "track":
-            footer_parts.append("🔂 Повтор трека")
+            embed.set_footer(text="🔂 Повтор трека")
         elif loop_mode == "queue":
-            footer_parts.append("🔁 Повтор очереди")
-        if history:
-            footer_parts.append(f"📚 История: {len(history)}")
-        if footer_parts:
-            embed.set_footer(text="  •  ".join(footer_parts))
+            embed.set_footer(text="🔁 Повтор очереди")
 
         if current_track.get("thumbnail"):
             embed.set_thumbnail(url=current_track["thumbnail"])
     else:
-        embed = discord.Embed(color=COLOR_IDLE)
-        embed.title = "🎵 Vexel Music"
-
-        desc = "*Готов к воспроизведению*\n`/play` — добавить трек"
-        if history:
-            last = history[-1]
-            last_title = last["title"]
-            desc += f"\n\n📚 Последнее: **{(last_title[:42] + '…') if len(last_title) > 42 else last_title}**"
-        embed.description = desc
-
+        embed = discord.Embed(
+            color=COLOR_IDLE,
+            title="🎵 Vexel Music",
+            description="*Готов к воспроизведению*\n`/play` — добавить трек",
+        )
         if queue:
             embed.add_field(name="📋 В очереди", value=f"{len(queue)} треков", inline=True)
 
@@ -941,80 +914,86 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 async def play(interaction: discord.Interaction, query: str):
     log_command(interaction.user.name, "/play")
 
+    guild_id = interaction.guild.id
+    voice_channel = interaction.user.voice.channel if interaction.user.voice else None
     vc = interaction.guild.voice_client
-    if not vc or not vc.is_connected():
-        if interaction.user.voice and interaction.user.voice.channel:
-            try:
-                vc = await safe_voice_connect(interaction.user.voice.channel)
-            except Exception as e:
-                await interaction.response.send_message(f"❌ Ошибка подключения: {str(e)}", ephemeral=True)
-                return
-        else:
-            await interaction.response.send_message("⚠️ Зайдите в голосовой канал.", ephemeral=True)
-            return
 
-    queue = get_queue(interaction.guild.id)
+    # Validate: must be in a voice channel or bot already connected
+    if not voice_channel and (not vc or not vc.is_connected()):
+        await interaction.response.send_message("⚠️ Зайдите в голосовой канал.", ephemeral=True)
+        return
 
+    queue = get_queue(guild_id)
     if len(queue) >= MAX_QUEUE_SIZE:
-        await interaction.response.send_message(f"❌ Очередь полная! ({len(queue)}/{MAX_QUEUE_SIZE})", ephemeral=True)
+        await interaction.response.send_message(f"❌ Очередь полная ({len(queue)}/{MAX_QUEUE_SIZE})", ephemeral=True)
         return
 
-    try:
-        await interaction.response.send_message("🔍 Обрабатываю запрос...", ephemeral=True)
-    except Exception:
-        return
+    # Acknowledge immediately — user sees feedback while voice connects + search runs
+    await interaction.response.send_message("🔍 Ищу...", ephemeral=True)
 
     search_query = (
         f"ytsearch1:{clean_search_query(query)}"
         if not (query.startswith("http://") or query.startswith("https://"))
         else query
     )
+    logger.info(f"🔍 Запрос: {query}")
 
-    try:
-        logger.info(f"🔍 Запрос: {query}")
+    # Launch voice connection and yt-dlp search concurrently
+    voice_task = None
+    if not vc or not vc.is_connected():
+        voice_task = asyncio.create_task(safe_voice_connect(voice_channel))
 
-        task_id = f"search:{search_query}"
-        future = ytdl_pool.submit_task(task_id, _extract_info_with_cache, search_query)
-        info = await asyncio.wait_for(asyncio.wrap_future(future), timeout=30.0)
+    task_id = f"search:{search_query}"
+    search_future = ytdl_pool.submit_task(task_id, _extract_info_with_cache, search_query)
+    search_awaitable = asyncio.wrap_future(search_future)
 
-        logger.info(f"✅ Получен ответ от yt-dlp")
-    except asyncio.TimeoutError:
-        logger.error(f"⏱️ Timeout при поиске")
+    # Wait for voice connection first
+    if voice_task:
         try:
-            await interaction.edit_original_response(content="⏱️ Timeout: запрос длился слишком долго.")
+            vc = await voice_task
+        except Exception as e:
+            try:
+                await interaction.edit_original_response(content=f"❌ Ошибка подключения: {e}")
+            except Exception:
+                pass
+            return
+
+    # Wait for search result
+    try:
+        info = await asyncio.wait_for(search_awaitable, timeout=30.0)
+        logger.info("✅ Получен ответ от yt-dlp")
+    except asyncio.TimeoutError:
+        logger.error("⏱️ Timeout при поиске")
+        try:
+            await interaction.edit_original_response(content="⏱️ Поиск занял слишком долго.")
         except Exception:
             pass
         return
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"❌ Ошибка yt-dlp: {error_msg}")
+        logger.error(f"❌ Ошибка yt-dlp: {e}")
         try:
-            await interaction.edit_original_response(content=f"❌ {error_msg}")
+            await interaction.edit_original_response(content=f"❌ {e}")
         except Exception:
             pass
         return
 
     if not info:
         try:
-            await interaction.edit_original_response(content="❌ **Не найдено**")
+            await interaction.edit_original_response(content="❌ Не найдено.")
         except Exception:
             pass
         return
 
     if "entries" in info and info["entries"]:
-        # Плейлист
         total_entries = len(info["entries"])
-        remaining_slots = MAX_QUEUE_SIZE - len(queue)
-        max_to_add = min(MAX_PLAYLIST_SIZE, remaining_slots, total_entries)
-        entries_to_process = info["entries"][:max_to_add]
+        max_to_add = min(MAX_PLAYLIST_SIZE, MAX_QUEUE_SIZE - len(queue), total_entries)
 
         added_count = 0
-        for i, entry in enumerate(entries_to_process):
+        for i, entry in enumerate(info["entries"][:max_to_add]):
             if entry and entry.get("title"):
-                has_full_info = entry.get("url") and entry.get("webpage_url")
-
+                has_full_info = bool(entry.get("url") and entry.get("webpage_url"))
                 track_data = {
-                    "title": entry.get("title", f"Track {i+1}"),
+                    "title": entry.get("title", f"Track {i + 1}"),
                     "duration": entry.get("duration", 0),
                     "playlist_url": normalize_playlist_url(search_query),
                     "playlist_index": i,
@@ -1023,45 +1002,33 @@ async def play(interaction: discord.Interaction, query: str):
                     "preloading": False,
                     "requester": interaction.user.name,
                 }
-
                 if has_full_info:
                     track_data.update({
                         "url": entry.get("url", ""),
                         "webpage_url": entry.get("webpage_url", ""),
                         "thumbnail": entry.get("thumbnail", ""),
                     })
-
                 queue.append(track_data)
                 added_count += 1
 
         if added_count == 0:
             try:
-                await interaction.edit_original_response(content="❌ Не удалось добавить треки из плейлиста.")
+                await interaction.edit_original_response(content="❌ Не удалось добавить треки.")
             except Exception:
                 pass
             return
 
-        lazy_tracks = [track for track in queue if track.get("lazy_load")]
-        if lazy_tracks:
-            asyncio.create_task(preload_manager.preload_tracks(interaction.guild.id, 5))
+        if any(t.get("lazy_load") for t in queue):
+            asyncio.create_task(preload_manager.preload_tracks(guild_id, 5))
 
         try:
-            ready_count = sum(1 for track in queue[-added_count:] if track.get("loaded"))
-            message = f"📃 **Добавлено {added_count} из {total_entries} треков**\n"
-
-            if ready_count > 0:
-                message += f"✅ {ready_count} треков готовы\n"
-            if added_count - ready_count > 0:
-                message += f"⏳ {added_count - ready_count} загружаются\n"
-
-            message += f"📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE}"
-
-            await interaction.edit_original_response(content=message)
+            await interaction.edit_original_response(
+                content=f"📃 **Добавлено {added_count}/{total_entries} треков** — очередь: {len(queue)}/{MAX_QUEUE_SIZE}"
+            )
         except Exception:
             pass
 
     elif info.get("title"):
-        # Одиночный трек
         dur = format_duration(info.get("duration", 0))
         track = {
             "title": info["title"],
@@ -1074,26 +1041,25 @@ async def play(interaction: discord.Interaction, query: str):
             "loaded": True,
         }
         queue.append(track)
-
         try:
             dur_str = f" `{dur}`" if dur else ""
             await interaction.edit_original_response(
-                content=f"🎶 **Добавлен:** {track['title']}{dur_str}\n📊 Очередь: {len(queue)}/{MAX_QUEUE_SIZE}"
+                content=f"🎶 **{track['title']}**{dur_str} — очередь: {len(queue)}/{MAX_QUEUE_SIZE}"
             )
         except Exception:
             pass
     else:
         try:
-            await interaction.edit_original_response(content="❌ Не удалось обработать результаты.")
+            await interaction.edit_original_response(content="❌ Не удалось обработать результат.")
         except Exception:
             pass
         return
 
-    player_channels[interaction.guild.id] = interaction.channel
-    await create_new_player(interaction.guild.id, interaction.channel)
+    player_channels[guild_id] = interaction.channel
+    await create_new_player(guild_id, interaction.channel)
 
     if not vc.is_playing() and len(queue) > 0:
-        await play_next(vc, interaction.guild.id)
+        await play_next(vc, guild_id)
 
 async def play_next(vc, guild_id):
     lock = get_play_lock(guild_id)
@@ -1123,9 +1089,6 @@ async def play_next(vc, guild_id):
                     queue.insert(0, current_track)
                 elif loop_mode == "queue":
                     queue.append(current_track)
-                    add_to_history(guild_id, current_track)
-                else:
-                    add_to_history(guild_id, current_track)
 
             if not queue:
                 current_tracks[guild_id] = None
@@ -1301,146 +1264,6 @@ async def queue_cmd(interaction: discord.Interaction):
     embed.set_footer(text="✅ Готов | 🚀 Загружается | ⏳ Ожидает")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@tree.command(name="shuffle", description="Перемешать очередь")
-async def shuffle_cmd(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/shuffle")
-    queue = get_queue(interaction.guild.id)
-    if not queue:
-        await interaction.response.send_message("📭 Очередь пуста.", ephemeral=True)
-        return
-    random.shuffle(queue)
-    await interaction.response.send_message(f"🔀 Очередь перемешана ({len(queue)} треков)", ephemeral=True)
-
-@tree.command(name="clear", description="Очистить очередь")
-async def clear_cmd(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/clear")
-    queue = get_queue(interaction.guild.id)
-    count = len(queue)
-    queue.clear()
-    await interaction.response.send_message(f"🗑️ Очередь очищена ({count} треков удалено)", ephemeral=True)
-
-@tree.command(name="remove", description="Удалить трек из очереди по номеру")
-@app_commands.describe(index="Номер трека в очереди")
-async def remove_cmd(interaction: discord.Interaction, index: app_commands.Range[int, 1, 50]):
-    log_command(interaction.user.name, "/remove")
-    queue = get_queue(interaction.guild.id)
-
-    if index > len(queue):
-        await interaction.response.send_message(
-            f"❌ Трека #{index} нет в очереди (всего {len(queue)}).", ephemeral=True
-        )
-        return
-
-    removed = queue.pop(index - 1)
-    await interaction.response.send_message(
-        f"🗑️ Удалён #{index}: **{removed['title']}**", ephemeral=True
-    )
-
-@tree.command(name="nowplaying", description="Текущий трек")
-async def nowplaying_cmd(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/nowplaying")
-    guild_id = interaction.guild.id
-    current_track = current_tracks.get(guild_id)
-    if not current_track:
-        await interaction.response.send_message("❌ Сейчас ничего не играет.", ephemeral=True)
-        return
-
-    dur = format_duration(current_track.get("duration", 0))
-    desc = f"**{current_track['title']}**"
-    if dur:
-        desc += f"\n`{dur}`"
-
-    embed = discord.Embed(
-        title="🎵 Сейчас играет",
-        description=desc,
-        color=get_embed_color(guild_id)
-    )
-    embed.add_field(name="👤 Заказал", value=current_track['requester'], inline=True)
-
-    queue = get_queue(guild_id)
-    embed.add_field(name="📃 В очереди", value=str(len(queue)), inline=True)
-
-    loop_mode = loop_modes.get(guild_id, "off")
-    if loop_mode != "off":
-        label = "Трек 🔂" if loop_mode == "track" else "Очередь 🔁"
-        embed.add_field(name="🔁 Повтор", value=label, inline=True)
-
-    if current_track.get("thumbnail"):
-        embed.set_thumbnail(url=current_track["thumbnail"])
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@tree.command(name="history", description="История треков")
-async def history_cmd(interaction: discord.Interaction):
-    log_command(interaction.user.name, "/history")
-
-    history = get_history(interaction.guild.id)
-
-    if not history:
-        await interaction.response.send_message("📚 История пуста.", ephemeral=True)
-        return
-
-    embed = discord.Embed(title=f"📚 История ({len(history)})", color=0x2f3136)
-
-    shown = history[-10:][::-1]  # last 10, newest first
-    history_text = ""
-    for i, track in enumerate(shown):
-        title = track["title"][:38] + ("..." if len(track["title"]) > 38 else "")
-        requester = track.get("requester", "")
-        requester_str = f" — *{requester}*" if requester else ""
-        history_text += f"`{i + 1}.` **{title}**{requester_str}\n"
-
-    if len(history) > 10:
-        history_text += f"*... и еще {len(history) - 10} треков*"
-
-    embed.description = history_text
-    embed.set_footer(text="Последние 10 треков (от новых к старым)")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@tree.command(name="help", description="Справка")
-async def help_cmd(interaction: discord.Interaction):
-    try:
-        embed = discord.Embed(title="📖 Vexel Music — Команды", color=0x5865F2)
-        embed.add_field(
-            name="🎵 Воспроизведение",
-            value=(
-                "`/play` — ссылка или поисковый запрос\n"
-                "`/pause` — пауза\n"
-                "`/resume` — продолжить\n"
-                "`/skip` — пропустить\n"
-                "`/stop` — стоп и выход\n"
-                "`/loop` — повтор: выкл → трек → очередь"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="📋 Очередь",
-            value=(
-                "`/queue` — показать очередь\n"
-                "`/shuffle` — перемешать\n"
-                "`/clear` — очистить\n"
-                "`/remove <номер>` — удалить трек"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="ℹ️ Информация",
-            value="`/nowplaying` — текущий трек\n`/history` — история",
-            inline=False,
-        )
-        embed.set_footer(
-            text=f"Очередь: до {MAX_QUEUE_SIZE} треков  •  Плейлист: до {MAX_PLAYLIST_SIZE} треков"
-        )
-
-        if not interaction.response.is_done():
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-    except discord.NotFound:
-        logger.warning("⚠️ /help: взаимодействие истекло")
-    except Exception as e:
-        logger.error(f"❌ Ошибка /help: {e}")
 
 if __name__ == "__main__":
     if not TOKEN:
