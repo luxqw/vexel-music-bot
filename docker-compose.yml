@@ -1,12 +1,15 @@
 services:
   bot:
     container_name: vexel-music-bot
-    build:
-      context: .
-      dockerfile: Dockerfile
+      #build:
+      #context: .
+      #dockerfile: Dockerfile
+    image: ghcr.io/luxqw/vexel-music-bot:dev-latest
+    network_mode: host
     env_file:
       - .env
     volumes:
+      - ./main.py:/app/main.py:ro  # Локальные правки поверх образа
       - ./cookies:/app/cookies:ro  # Только чтение для cookies
       - cache_data:/app/cache      # Именованный том для кэша
       - logs_data:/app/logs        # Именованный том для логов

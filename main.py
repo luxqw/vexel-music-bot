@@ -440,16 +440,24 @@ async def safe_voice_connect(channel, max_retries=3):
 
             existing_vc = discord.utils.get(bot.voice_clients, guild=channel.guild)
             if existing_vc:
-                if existing_vc.channel == channel:
+                if existing_vc.channel == channel and existing_vc.is_connected():
                     return existing_vc
-                else:
-                    await existing_vc.move_to(channel)
-                    return existing_vc
+                try:
+                    await existing_vc.disconnect(force=True)
+                except Exception:
+                    pass
 
-            vc = await channel.connect(timeout=10.0, reconnect=True)
+            vc = await channel.connect(timeout=10.0, reconnect=False)
             logger.info(f"✅ Подключен к {channel.name}")
             return vc
 
+        except discord.errors.ConnectionClosed as e:
+            if e.code == 4006:
+                logger.warning(f"⚠️ Голосовая сессия устарела (4006), сброс и повтор {attempt + 1}/{max_retries}")
+            else:
+                logger.warning(f"⚠️ Ошибка подключения (код {e.code}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)
         except Exception as e:
             logger.warning(f"⚠️ Ошибка подключения: {e}")
             if attempt < max_retries - 1:
@@ -1049,9 +1057,18 @@ async def play_next(vc, guild_id):
             queue = get_queue(guild_id)
 
             if not vc or not vc.is_connected():
-                logger.warning("⚠️ Voice client отключен")
-                await cleanup_guild_data(guild_id)
-                return
+                logger.warning("⚠️ Voice client отключен, попытка переподключения...")
+                channel = getattr(vc, 'channel', None)
+                if channel:
+                    try:
+                        vc = await safe_voice_connect(channel)
+                    except Exception:
+                        logger.error("❌ Не удалось переподключиться")
+                        await cleanup_guild_data(guild_id)
+                        return
+                else:
+                    await cleanup_guild_data(guild_id)
+                    return
 
             current_track = current_tracks.get(guild_id)
             loop_mode = loop_modes.get(guild_id, "off")
