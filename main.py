@@ -354,9 +354,10 @@ def get_ytdl_opts(extract_flat=False):
 
     # Build YouTube extractor args
     yt_extractor_args = {
-        # tv_embedded — YouTube TV embedded player; no PO token required, no JS challenge,
-        # provides audio-only CDN URLs without sefc=1. web — fallback with cookies.
-        "player_client": ["tv_embedded", "web"],
+        # tv — YouTube TV client; no PO Token required; needs cookies to avoid DRM (configured).
+        # web_safari — provides HLS (m3u8) formats that bypass GVS PO Token requirement.
+        # web — last fallback.
+        "player_client": ["tv", "web_safari", "web"],
     }
 
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
