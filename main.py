@@ -354,9 +354,10 @@ def get_ytdl_opts(extract_flat=False):
 
     # Build YouTube extractor args
     yt_extractor_args = {
-        # web — standard YouTube web player; works reliably with cookies.
-        # web_creator — fallback for creator-mode content.
-        "player_client": ["web", "web_creator"],
+        # tv_embedded — YouTube TV embedded player; no PO token or JS challenge needed.
+        # Provides direct audio-only CDN URLs FFmpeg can fetch without browser headers.
+        # web — fallback with cookies for content tv_embedded can't serve.
+        "player_client": ["tv_embedded", "web"],
     }
 
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
@@ -411,7 +412,9 @@ def create_source(url):
         url,
         before_options=(
             "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-            "-reconnect_at_eof 1 -multiple_requests 1 -rw_timeout 10000000"
+            "-reconnect_at_eof 1 -multiple_requests 1 -rw_timeout 10000000 "
+            '-user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"'
         ),
         options='-vn -bufsize 512k'
     )
