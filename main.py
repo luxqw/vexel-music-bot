@@ -407,40 +407,15 @@ def get_play_lock(guild_id):
         play_next_locks[guild_id] = asyncio.Lock()
     return play_next_locks[guild_id]
 
-def _parse_netscape_cookies(cookie_file):
-    """Return Cookie header string parsed from a Netscape-format cookie file."""
-    cookies = []
-    try:
-        with open(cookie_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                parts = line.split('\t')
-                if len(parts) >= 7:
-                    name, value = parts[5], parts[6]
-                    # Skip values with chars that would break FFmpeg header parsing
-                    if '"' not in value and '\r' not in value and '\n' not in value:
-                        cookies.append(f"{name}={value}")
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось прочитать куки: {e}")
-    return "; ".join(cookies)
-
 def create_source(url):
-    before_opts = (
-        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-        "-reconnect_at_eof 1 -multiple_requests 1 -rw_timeout 10000000 "
-        '-user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"'
-    )
-    cookie_file = os.getenv("YOUTUBE_COOKIES_FILE")
-    if cookie_file and os.path.exists(cookie_file):
-        cookie_str = _parse_netscape_cookies(cookie_file)
-        if cookie_str:
-            before_opts += f' -headers "Cookie: {cookie_str}"'
     return discord.FFmpegPCMAudio(
         url,
-        before_options=before_opts,
+        before_options=(
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+            "-reconnect_at_eof 1 -multiple_requests 1 -rw_timeout 10000000 "
+            '-user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"'
+        ),
         options='-vn -bufsize 512k'
     )
 
