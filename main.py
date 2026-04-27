@@ -962,8 +962,10 @@ async def play(interaction: discord.Interaction, query: str):
         return
 
     # Acknowledge immediately — user sees feedback while voice connects + search runs
+    age = (discord.utils.utcnow() - interaction.created_at).total_seconds()
+    logger.info(f"⏱️ Interaction age before defer: {age:.3f}s")
     try:
-        await interaction.response.send_message("🔍 Ищу...", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
     except (discord.errors.InteractionResponded, discord.errors.HTTPException) as e:
         logger.warning(f"⚠️ /play: не удалось подтвердить взаимодействие: {e}")
         return
