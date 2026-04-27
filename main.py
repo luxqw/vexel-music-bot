@@ -170,19 +170,22 @@ class YTDLPPool:
         with self.task_lock:
             if task_id in self.active_tasks:
                 return self.active_tasks[task_id]
-
             future = self.executor.submit(func, *args, **kwargs)
             self.active_tasks[task_id] = future
 
-            def cleanup_task(fut):
-                try:
-                    with self.task_lock:
-                        self.active_tasks.pop(task_id, None)
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка очистки задачи {task_id}: {e}")
+        # add_done_callback must be registered OUTSIDE the lock.
+        # If the future is already done, concurrent.futures calls the callback
+        # immediately in the current thread — which would deadlock if we're
+        # still holding task_lock (threading.Lock is not reentrant).
+        def cleanup_task(fut):
+            try:
+                with self.task_lock:
+                    self.active_tasks.pop(task_id, None)
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка очистки задачи {task_id}: {e}")
 
-            future.add_done_callback(cleanup_task)
-            return future
+        future.add_done_callback(cleanup_task)
+        return future
 
 ytdl_pool = YTDLPPool(max_workers=YTDLP_WORKERS)
 
