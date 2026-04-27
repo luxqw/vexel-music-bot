@@ -348,9 +348,9 @@ def get_ytdl_opts(extract_flat=False):
 
     # Build YouTube extractor args
     yt_extractor_args = {
-        # ios — works without PO token, good audio quality.
-        # web_creator — fallback with JS challenge solving via Node.js.
-        "player_client": ["ios", "web_creator"],
+        # web — standard YouTube web player; works reliably with cookies.
+        # web_creator — fallback for creator-mode content.
+        "player_client": ["web", "web_creator"],
     }
 
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
