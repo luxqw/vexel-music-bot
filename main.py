@@ -1186,12 +1186,17 @@ async def play_next(vc, guild_id):
                     return
 
                 source = create_source(audio_url)
+                play_start = time.monotonic()
 
                 def after_play(error):
-                    if error:
-                        logger.error(f"❌ Ошибка воспроизведения: {error}")
-                        # Re-queue the failed track so play_next can retry it.
-                        # Dict/list ops are GIL-safe from the audio thread.
+                    elapsed = time.monotonic() - play_start
+                    duration = next_track.get("duration", 9999)
+                    # FFmpeg HTTP 403 fails silently: discord.py gets empty stdout and
+                    # calls after_play(None). Detect this by checking elapsed time —
+                    # if the track barely played but should be long, it failed.
+                    is_failure = bool(error) or (elapsed < 5.0 and duration > 10)
+                    if is_failure:
+                        logger.error(f"❌ Ошибка воспроизведения (elapsed={elapsed:.1f}s): {error or 'FFmpeg вышел немедленно'}")
                         failed = current_tracks.pop(guild_id, None)
                         if failed:
                             retry_count = failed.get("_retry_count", 0) + 1
@@ -1199,14 +1204,11 @@ async def play_next(vc, guild_id):
                                 failed["_retry_count"] = retry_count
                                 play_url = failed.get("webpage_url") or failed.get("url")
                                 if play_url:
-                                    # Invalidate cached audio URL so retry fetches a fresh one
                                     cache_manager.set(f"audio_url:{play_url}", None, ttl=1)
                                 get_queue(guild_id).insert(0, failed)
                                 logger.info(f"🔄 Повтор трека (попытка {retry_count}): {failed.get('title')}")
                             else:
                                 logger.warning(f"⚠️ Пропуск трека после {retry_count} неудач: {failed.get('title')}")
-                    # run_coroutine_threadsafe is required here because after_play
-                    # is called from the discord.py audio thread, not the event loop
                     asyncio.run_coroutine_threadsafe(play_next_safe(vc, guild_id), event_loop)
 
                 if vc.is_playing():
