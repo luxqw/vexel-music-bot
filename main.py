@@ -348,9 +348,9 @@ def get_ytdl_opts(extract_flat=False):
 
     # Build YouTube extractor args
     yt_extractor_args = {
-        # Android — bypasses n-challenge, no JS needed, but HTTPS formats need PO token.
-        # web_creator — web fallback with JS challenge solving via Node.js.
-        "player_client": ["android", "web_creator"],
+        # ios — works without PO token, good audio quality.
+        # web_creator — fallback with JS challenge solving via Node.js.
+        "player_client": ["ios", "web_creator"],
     }
 
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
@@ -1155,6 +1155,21 @@ async def play_next(vc, guild_id):
                 def after_play(error):
                     if error:
                         logger.error(f"❌ Ошибка воспроизведения: {error}")
+                        # Re-queue the failed track so play_next can retry it.
+                        # Dict/list ops are GIL-safe from the audio thread.
+                        failed = current_tracks.pop(guild_id, None)
+                        if failed:
+                            retry_count = failed.get("_retry_count", 0) + 1
+                            if retry_count <= 2:
+                                failed["_retry_count"] = retry_count
+                                play_url = failed.get("webpage_url") or failed.get("url")
+                                if play_url:
+                                    # Invalidate cached audio URL so retry fetches a fresh one
+                                    cache_manager.set(f"audio_url:{play_url}", None, ttl=1)
+                                get_queue(guild_id).insert(0, failed)
+                                logger.info(f"🔄 Повтор трека (попытка {retry_count}): {failed.get('title')}")
+                            else:
+                                logger.warning(f"⚠️ Пропуск трека после {retry_count} неудач: {failed.get('title')}")
                     # run_coroutine_threadsafe is required here because after_play
                     # is called from the discord.py audio thread, not the event loop
                     asyncio.run_coroutine_threadsafe(play_next_safe(vc, guild_id), event_loop)
