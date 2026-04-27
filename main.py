@@ -52,8 +52,10 @@ current_tracks = {}
 player_channels = {}
 track_history = {}
 play_next_locks = {}
-loop_modes: dict = {}    # guild_id -> "off" | "track" | "queue"
-guild_volumes: dict = {} # guild_id -> float (0.0 - 2.0, default 1.0)
+loop_modes: dict = {}       # guild_id -> "off" | "track" | "queue"
+guild_volumes: dict = {}    # guild_id -> float (0.0 - 2.0, default 1.0)
+auto_paused_guilds: set = set()  # guilds where bot auto-paused due to empty channel
+alone_tasks: dict = {}      # guild_id -> asyncio.Task (pending auto-disconnect)
 
 class CacheManager:
     _instance = None
@@ -422,8 +424,8 @@ def create_source(url):
     )
 
 def clean_search_query(query):
-    cleaned = re.sub(r'[^\w\s\-.,!?]', '', query)
-    return cleaned.strip()
+    # Remove only ASCII control characters; preserve Unicode (Cyrillic, CJK, etc.)
+    return re.sub(r'[\x00-\x1f\x7f]', '', query).strip()
 
 def get_embed_color(guild_id) -> int:
     vc = next((v for v in bot.voice_clients if v.guild.id == guild_id), None)
@@ -446,6 +448,10 @@ async def safe_voice_connect(channel, max_retries=3):
                     await existing_vc.disconnect(force=True)
                 except Exception:
                     pass
+                # Wait for Discord to acknowledge the disconnect before opening a new
+                # session — without this delay, the server sees two concurrent sessions
+                # and kills the new one with 4006.
+                await asyncio.sleep(1.0)
 
             vc = await channel.connect(timeout=10.0, reconnect=False)
             logger.info(f"✅ Подключен к {channel.name}")
@@ -487,9 +493,13 @@ async def cleanup_guild_data(guild_id):
         queues.pop(guild_id, None)
         play_next_locks.pop(guild_id, None)
         loop_modes.pop(guild_id, None)
-        guild_volumes.pop(guild_id, None)
         preload_manager.preload_locks.pop(guild_id, None)
-        logger.info(f"🧹 Данные очищены")
+        auto_paused_guilds.discard(guild_id)
+        task = alone_tasks.pop(guild_id, None)
+        if task and not task.done():
+            task.cancel()
+        # guild_volumes and track_history are intentionally preserved across sessions
+        logger.info("🧹 Данные очищены")
     except Exception as e:
         logger.error(f"❌ Ошибка очистки: {e}")
 
@@ -732,45 +742,51 @@ def create_player_embed(guild_id):
     queue = get_queue(guild_id)
     history = get_history(guild_id)
     color = get_embed_color(guild_id)
+    vc = next((v for v in bot.voice_clients if v.guild.id == guild_id), None)
 
     embed = discord.Embed(color=color)
 
     if current_track:
+        is_paused = vc and vc.is_paused()
+        embed.title = "⏸️ На паузе" if is_paused else "🎵 Сейчас играет"
+
         dur = format_duration(current_track.get("duration", 0))
         desc = f"**{current_track['title']}**"
         if dur:
             desc += f"  •  `{dur}`"
         embed.description = desc
 
-        vc = next((v for v in bot.voice_clients if v.guild.id == guild_id), None)
-        if vc and vc.is_paused():
-            embed.title = "⏸️ На паузе"
-        else:
-            embed.title = "🎵 Сейчас играет"
-
-        embed.add_field(name="👤 Заказал", value=current_track['requester'], inline=True)
+        embed.add_field(name="👤 Заказал", value=current_track["requester"], inline=True)
         embed.add_field(name="📃 В очереди", value=f"{len(queue)}/{MAX_QUEUE_SIZE}", inline=True)
         embed.add_field(name="📚 История", value=str(len(history)), inline=True)
 
         if queue:
-            next_title = queue[0]['title'][:35] + ('...' if len(queue[0]['title']) > 35 else '')
+            next_title = queue[0]["title"][:40] + ("..." if len(queue[0]["title"]) > 40 else "")
             embed.add_field(name="⏭️ Следующий", value=next_title, inline=False)
 
         loop_mode = loop_modes.get(guild_id, "off")
         vol = int(guild_volumes.get(guild_id, 1.0) * 100)
-        extra = []
-        if loop_mode != "off":
-            extra.append("🔂 Трек" if loop_mode == "track" else "🔁 Очередь")
+        status_parts = []
+        if loop_mode == "track":
+            status_parts.append("🔂 Трек")
+        elif loop_mode == "queue":
+            status_parts.append("🔁 Очередь")
         if vol != 100:
-            extra.append(f"🔊 {vol}%")
-        if extra:
-            embed.add_field(name="​", value="  ".join(extra), inline=False)
+            status_parts.append(f"🔊 {vol}%")
+        if status_parts:
+            embed.add_field(name="⚙️ Режим", value="  ".join(status_parts), inline=False)
 
-        if current_track.get('thumbnail'):
-            embed.set_thumbnail(url=current_track['thumbnail'])
+        if current_track.get("thumbnail"):
+            embed.set_thumbnail(url=current_track["thumbnail"])
     else:
         embed.title = "🎵 Музыкальный плеер"
-        embed.description = "*Готов к воспроизведению*"
+
+        history_preview = ""
+        if history:
+            last = history[-1]
+            last_title = last["title"][:40] + ("..." if len(last["title"]) > 40 else "")
+            history_preview = f"\n\n📚 Последнее: **{last_title}**"
+        embed.description = f"*Готов к воспроизведению*{history_preview}"
 
         if queue:
             embed.add_field(name="📃 В очереди", value=f"{len(queue)}/{MAX_QUEUE_SIZE}", inline=True)
@@ -843,36 +859,62 @@ async def on_ready():
     except Exception as e:
         logger.error(f"❌ Ошибка синхронизации: {e}")
 
+async def _alone_disconnect_task(guild: discord.Guild):
+    """Waits 60 s then disconnects the bot if it's still alone in the voice channel."""
+    await asyncio.sleep(60)
+    alone_tasks.pop(guild.id, None)
+    vc = discord.utils.get(bot.voice_clients, guild=guild)
+    if not vc or not vc.channel:
+        return
+    if not any(m for m in vc.channel.members if not m.bot):
+        logger.info(f"⏹️ Авто-отключение от {guild.name} (никого нет)")
+        await safe_voice_disconnect(vc, guild.id)
+
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if member.bot:
+    guild = member.guild
+    vc = discord.utils.get(bot.voice_clients, guild=guild)
+
+    # Handle the bot itself being moved or disconnected
+    if member == bot.user:
+        if before.channel and not after.channel:
+            # Bot was kicked from the channel
+            logger.info("⚠️ Бот был выкинут из голосового канала")
+            auto_paused_guilds.discard(guild.id)
+            alone_tasks.pop(guild.id, None)
+            await cleanup_guild_data(guild.id)
         return
 
-    vc = discord.utils.get(bot.voice_clients, guild=member.guild)
     if not vc or not vc.channel:
         return
 
     human_members = [m for m in vc.channel.members if not m.bot]
 
     if len(human_members) == 0:
+        # Cancel any existing alone-task, start a fresh one
+        existing = alone_tasks.get(guild.id)
+        if existing and not existing.done():
+            return  # already counting down
+
         if vc.is_playing():
             vc.pause()
-            logger.info("⏸️ Пауза - бот один в канале")
+            auto_paused_guilds.add(guild.id)
+            logger.info("⏸️ Пауза — бот один в канале")
 
-        await asyncio.sleep(60)
+        task = asyncio.create_task(_alone_disconnect_task(guild))
+        alone_tasks[guild.id] = task
 
-        vc = discord.utils.get(bot.voice_clients, guild=member.guild)
-        if not vc or not vc.channel:
-            return
+    else:
+        # Someone is in the channel — cancel pending auto-disconnect
+        task = alone_tasks.pop(guild.id, None)
+        if task and not task.done():
+            task.cancel()
 
-        human_members = [m for m in vc.channel.members if not m.bot]
-        if len(human_members) == 0:
-            logger.info(f"⏹️ Отключение от {member.guild.name}")
-            await safe_voice_disconnect(vc, member.guild.id)
-    elif vc.is_paused():
-        # Someone joined while bot was paused due to being alone — resume
-        vc.resume()
-        logger.info("▶️ Возобновление - пользователь вернулся в канал")
+        # Resume only if we were the ones who auto-paused
+        if guild.id in auto_paused_guilds and vc.is_paused():
+            auto_paused_guilds.discard(guild.id)
+            vc.resume()
+            logger.info("▶️ Возобновление — пользователь вернулся в канал")
 
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -897,7 +939,7 @@ async def play(interaction: discord.Interaction, query: str):
     log_command(interaction.user.name, "/play")
 
     vc = interaction.guild.voice_client
-    if not vc:
+    if not vc or not vc.is_connected():
         if interaction.user.voice and interaction.user.voice.channel:
             try:
                 vc = await safe_voice_connect(interaction.user.voice.channel)
@@ -1361,13 +1403,13 @@ async def history_cmd(interaction: discord.Interaction):
 
     embed = discord.Embed(title=f"📚 История ({len(history)})", color=0x2f3136)
 
+    shown = history[-10:][::-1]  # last 10, newest first
     history_text = ""
-    shown = list(reversed(history[-10:]))
     for i, track in enumerate(shown):
-        title = track['title'][:35] + ('...' if len(track['title']) > 35 else '')
-        requester = track.get('requester', '')
+        title = track["title"][:38] + ("..." if len(track["title"]) > 38 else "")
+        requester = track.get("requester", "")
         requester_str = f" — *{requester}*" if requester else ""
-        history_text += f"`{len(history)-i}.` **{title}**{requester_str}\n"
+        history_text += f"`{i + 1}.` **{title}**{requester_str}\n"
 
     if len(history) > 10:
         history_text += f"*... и еще {len(history) - 10} треков*"
