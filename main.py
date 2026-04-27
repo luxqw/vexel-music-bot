@@ -354,9 +354,9 @@ def get_ytdl_opts(extract_flat=False):
 
     # Build YouTube extractor args
     yt_extractor_args = {
-        # mweb — mobile web client; supported in older yt-dlp, gives audio-only formats
-        # without PO token. web — fallback with cookies.
-        "player_client": ["mweb", "web"],
+        # tv_embedded — YouTube TV embedded player; no PO token required, no JS challenge,
+        # provides audio-only CDN URLs without sefc=1. web — fallback with cookies.
+        "player_client": ["tv_embedded", "web"],
     }
 
     cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
