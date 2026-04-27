@@ -53,7 +53,6 @@ player_channels = {}
 track_history = {}
 play_next_locks = {}
 loop_modes: dict = {}       # guild_id -> "off" | "track" | "queue"
-guild_volumes: dict = {}    # guild_id -> float (0.0 - 2.0, default 1.0)
 auto_paused_guilds: set = set()  # guilds where bot auto-paused due to empty channel
 alone_tasks: dict = {}      # guild_id -> asyncio.Task (pending auto-disconnect)
 
@@ -453,7 +452,10 @@ async def safe_voice_connect(channel, max_retries=3):
                 # and kills the new one with 4006.
                 await asyncio.sleep(1.0)
 
-            vc = await channel.connect(timeout=10.0, reconnect=False)
+            # First attempt gets a longer budget — Discord takes time to spin up a
+            # voice server for a guild that has no active session yet.
+            timeout = 20.0 if attempt == 0 else 10.0
+            vc = await channel.connect(timeout=timeout, reconnect=False)
             logger.info(f"✅ Подключен к {channel.name}")
             return vc
 
@@ -498,7 +500,7 @@ async def cleanup_guild_data(guild_id):
         task = alone_tasks.pop(guild_id, None)
         if task and not task.done():
             task.cancel()
-        # guild_volumes and track_history are intentionally preserved across sessions
+        # track_history is intentionally preserved across sessions
         logger.info("🧹 Данные очищены")
     except Exception as e:
         logger.error(f"❌ Ошибка очистки: {e}")
@@ -638,9 +640,8 @@ def _extract_info_with_cache(search_query):
         raise
 
 class MusicPlayerView(discord.ui.View):
-    def __init__(self, guild_id):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.guild_id = guild_id
 
     @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary, custom_id="pause_resume")
     async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -741,57 +742,59 @@ def create_player_embed(guild_id):
     current_track = current_tracks.get(guild_id)
     queue = get_queue(guild_id)
     history = get_history(guild_id)
-    color = get_embed_color(guild_id)
     vc = next((v for v in bot.voice_clients if v.guild.id == guild_id), None)
-
-    embed = discord.Embed(color=color)
 
     if current_track:
         is_paused = vc and vc.is_paused()
-        embed.title = "⏸️ На паузе" if is_paused else "🎵 Сейчас играет"
+        color = COLOR_PAUSED if is_paused else COLOR_PLAYING
+        embed = discord.Embed(color=color)
+
+        embed.set_author(name="⏸  На паузе" if is_paused else "♪  Сейчас играет")
+
+        title = current_track["title"]
+        embed.title = (title[:57] + "…") if len(title) > 60 else title
 
         dur = format_duration(current_track.get("duration", 0))
-        desc = f"**{current_track['title']}**"
+        meta_parts = [f"👤 {current_track['requester']}"]
         if dur:
-            desc += f"  •  `{dur}`"
-        embed.description = desc
-
-        embed.add_field(name="👤 Заказал", value=current_track["requester"], inline=True)
-        embed.add_field(name="📃 В очереди", value=f"{len(queue)}/{MAX_QUEUE_SIZE}", inline=True)
-        embed.add_field(name="📚 История", value=str(len(history)), inline=True)
+            meta_parts.append(f"⏱ `{dur}`")
+        meta_parts.append(f"📋 {len(queue)}/{MAX_QUEUE_SIZE}")
+        embed.description = "  •  ".join(meta_parts)
 
         if queue:
-            next_title = queue[0]["title"][:40] + ("..." if len(queue[0]["title"]) > 40 else "")
-            embed.add_field(name="⏭️ Следующий", value=next_title, inline=False)
+            next_title = queue[0]["title"]
+            embed.add_field(
+                name="⏭️  Следующий",
+                value=(next_title[:45] + "…") if len(next_title) > 45 else next_title,
+                inline=False,
+            )
 
         loop_mode = loop_modes.get(guild_id, "off")
-        vol = int(guild_volumes.get(guild_id, 1.0) * 100)
-        status_parts = []
+        footer_parts = []
         if loop_mode == "track":
-            status_parts.append("🔂 Трек")
+            footer_parts.append("🔂 Повтор трека")
         elif loop_mode == "queue":
-            status_parts.append("🔁 Очередь")
-        if vol != 100:
-            status_parts.append(f"🔊 {vol}%")
-        if status_parts:
-            embed.add_field(name="⚙️ Режим", value="  ".join(status_parts), inline=False)
+            footer_parts.append("🔁 Повтор очереди")
+        if history:
+            footer_parts.append(f"📚 История: {len(history)}")
+        if footer_parts:
+            embed.set_footer(text="  •  ".join(footer_parts))
 
         if current_track.get("thumbnail"):
             embed.set_thumbnail(url=current_track["thumbnail"])
     else:
-        embed.title = "🎵 Музыкальный плеер"
+        embed = discord.Embed(color=COLOR_IDLE)
+        embed.title = "🎵 Vexel Music"
 
-        history_preview = ""
+        desc = "*Готов к воспроизведению*\n`/play` — добавить трек"
         if history:
             last = history[-1]
-            last_title = last["title"][:40] + ("..." if len(last["title"]) > 40 else "")
-            history_preview = f"\n\n📚 Последнее: **{last_title}**"
-        embed.description = f"*Готов к воспроизведению*{history_preview}"
+            last_title = last["title"]
+            desc += f"\n\n📚 Последнее: **{(last_title[:42] + '…') if len(last_title) > 42 else last_title}**"
+        embed.description = desc
 
         if queue:
-            embed.add_field(name="📃 В очереди", value=f"{len(queue)}/{MAX_QUEUE_SIZE}", inline=True)
-        if history:
-            embed.add_field(name="📚 История", value=str(len(history)), inline=True)
+            embed.add_field(name="📋 В очереди", value=f"{len(queue)} треков", inline=True)
 
     return embed
 
@@ -810,7 +813,7 @@ async def create_new_player(guild_id, channel):
     await delete_old_player(guild_id)
 
     embed = create_player_embed(guild_id)
-    view = MusicPlayerView(guild_id)
+    view = MusicPlayerView()
 
     try:
         player_msg = await channel.send(embed=embed, view=view)
@@ -844,7 +847,7 @@ async def on_ready():
     logger.info(f"📊 Лимиты: плейлист {MAX_PLAYLIST_SIZE}, очередь {MAX_QUEUE_SIZE}")
     logger.info(f"⚙️ Конфиг: workers={YTDLP_WORKERS}, cache_ttl={CACHE_TTL}s, log={LOG_LEVEL}")
 
-    bot.add_view(MusicPlayerView(None))
+    bot.add_view(MusicPlayerView())
 
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.listening,
@@ -1180,9 +1183,7 @@ async def play_next(vc, guild_id):
                     asyncio.create_task(play_next_safe(vc, guild_id))
                     return
 
-                raw_source = create_source(audio_url)
-                volume = guild_volumes.get(guild_id, 1.0)
-                source = discord.PCMVolumeTransformer(raw_source, volume=volume)
+                source = create_source(audio_url)
 
                 def after_play(error):
                     if error:
@@ -1252,28 +1253,6 @@ async def skip(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("❌ Ничего не играет", ephemeral=True)
 
-@tree.command(name="volume", description="Громкость (0-200), без аргументов — показать текущую")
-@app_commands.describe(level="Уровень громкости от 0 до 200")
-async def volume_cmd(interaction: discord.Interaction, level: app_commands.Range[int, 0, 200] = None):
-    log_command(interaction.user.name, "/volume")
-    guild_id = interaction.guild.id
-
-    if level is None:
-        current = int(guild_volumes.get(guild_id, 1.0) * 100)
-        await interaction.response.send_message(f"🔊 Текущая громкость: **{current}%**", ephemeral=True)
-        return
-
-    guild_volumes[guild_id] = level / 100
-
-    vc = interaction.guild.voice_client
-    if vc and isinstance(vc.source, discord.PCMVolumeTransformer):
-        vc.source.volume = level / 100
-
-    await interaction.response.send_message(f"🔊 Громкость: **{level}%**", ephemeral=True)
-
-    channel = player_channels.get(guild_id)
-    if channel:
-        await create_new_player(guild_id, channel)
 
 @tree.command(name="loop", description="Режим повтора: трек / очередь / выкл")
 async def loop_cmd(interaction: discord.Interaction):
@@ -1421,45 +1400,36 @@ async def history_cmd(interaction: discord.Interaction):
 @tree.command(name="help", description="Справка")
 async def help_cmd(interaction: discord.Interaction):
     try:
-        embed = discord.Embed(title="📖 Команды Vexel Music", color=0x5865F2)
+        embed = discord.Embed(title="📖 Vexel Music — Команды", color=0x5865F2)
         embed.add_field(
             name="🎵 Воспроизведение",
             value=(
-                "`/play` — Воспроизвести по ссылке или запросу\n"
-                "`/pause` — Пауза\n"
-                "`/resume` — Продолжить\n"
-                "`/skip` — Пропустить\n"
-                "`/stop` — Стоп и выход"
+                "`/play` — ссылка или поисковый запрос\n"
+                "`/pause` — пауза\n"
+                "`/resume` — продолжить\n"
+                "`/skip` — пропустить\n"
+                "`/stop` — стоп и выход\n"
+                "`/loop` — повтор: выкл → трек → очередь"
             ),
-            inline=False
+            inline=False,
         )
         embed.add_field(
-            name="🔊 Настройки",
+            name="📋 Очередь",
             value=(
-                "`/volume [0-200]` — Громкость (без аргумента — показать)\n"
-                "`/loop` — Режим повтора: выкл → трек → очередь"
+                "`/queue` — показать очередь\n"
+                "`/shuffle` — перемешать\n"
+                "`/clear` — очистить\n"
+                "`/remove <номер>` — удалить трек"
             ),
-            inline=False
-        )
-        embed.add_field(
-            name="📃 Очередь",
-            value=(
-                "`/queue` — Показать очередь\n"
-                "`/shuffle` — Перемешать\n"
-                "`/clear` — Очистить\n"
-                "`/remove <номер>` — Удалить трек"
-            ),
-            inline=False
+            inline=False,
         )
         embed.add_field(
             name="ℹ️ Информация",
-            value="`/nowplaying` — Текущий трек\n`/history` — История",
-            inline=False
+            value="`/nowplaying` — текущий трек\n`/history` — история",
+            inline=False,
         )
-        embed.add_field(
-            name="⚙️ Лимиты",
-            value=f"Очередь: **{MAX_QUEUE_SIZE}** треков  •  Плейлист: **{MAX_PLAYLIST_SIZE}** треков",
-            inline=False
+        embed.set_footer(
+            text=f"Очередь: до {MAX_QUEUE_SIZE} треков  •  Плейлист: до {MAX_PLAYLIST_SIZE} треков"
         )
 
         if not interaction.response.is_done():
