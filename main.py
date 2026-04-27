@@ -929,7 +929,11 @@ async def play(interaction: discord.Interaction, query: str):
         return
 
     # Acknowledge immediately — user sees feedback while voice connects + search runs
-    await interaction.response.send_message("🔍 Ищу...", ephemeral=True)
+    try:
+        await interaction.response.send_message("🔍 Ищу...", ephemeral=True)
+    except (discord.errors.InteractionResponded, discord.errors.HTTPException) as e:
+        logger.warning(f"⚠️ /play: не удалось подтвердить взаимодействие: {e}")
+        return
 
     search_query = (
         f"ytsearch1:{clean_search_query(query)}"
@@ -1164,6 +1168,11 @@ async def play_next(vc, guild_id):
 
             except Exception as e:
                 logger.error(f"❌ Ошибка воспроизведения: {e}")
+                # Re-insert the failed track at front of queue so play_next retries it.
+                # Clear current_tracks so play_next treats it as a fresh start (not a loop iteration).
+                failed_track = current_tracks.pop(guild_id, None)
+                if failed_track:
+                    queue.insert(0, failed_track)
                 asyncio.create_task(play_next_safe(vc, guild_id))
                 return
 
