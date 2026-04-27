@@ -344,6 +344,9 @@ def get_ytdl_opts(extract_flat=False):
         # Allow downloading the EJS challenge solver script from GitHub
         "allow_unplayable_formats": False,
         "remote_components": ["ejs:github"],
+        # Container has read_only: true — /home/botuser/.cache is not writable.
+        # Point yt-dlp cache to /tmp (tmpfs) so JS challenge solver and sigfuncs can be cached.
+        "cachedir": "/tmp/yt-dlp-cache",
     }
 
     # Build YouTube extractor args
@@ -440,7 +443,7 @@ async def safe_voice_connect(channel, max_retries=3):
                 # and kills the new one with 4006.
                 await asyncio.sleep(1.0)
 
-            vc = await channel.connect(timeout=5.0, reconnect=False)
+            vc = await channel.connect(timeout=5.0, reconnect=True)
             logger.info(f"✅ Подключен к {channel.name}")
             return vc
 
